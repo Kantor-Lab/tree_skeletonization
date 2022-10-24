@@ -1,0 +1,19 @@
+name: 3D_reconstruction
+channels:
+  - pytorch
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.7.6
+  - pytorch=1.7.1
+  - torchvision=0.8.2
+  - cudatoolkit=11.0
+  - matplotlib
+  - tensorboard
+  - scipy
+  - opencv
+  - tqdm
+  - opt_einsum
+  - imageio
+  - scikit-image
+  - p7zip
