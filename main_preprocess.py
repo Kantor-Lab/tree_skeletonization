@@ -5,10 +5,10 @@ import argparse
 import open3d as o3d
 import numpy as np
 import time
-import os 
+import os
 import cv2
 
-from modules.instance_segmentation import detectron 
+from modules.instance_segmentation import detectron
 from modules.treeskel import edge_extractor
 from modules.treeskel.likelihood_map import construct_likelihood_map
 from modules.treeskel import multiway_registration
@@ -36,14 +36,15 @@ edges_combined = []
 radius_combined = []
 scores_combined = []
 
+
 def clusters_from_masks_sim(masks, color_img, depth_img, camera_info, scores, visualize=False):
-    
+
     '''
     branch_masks: (c,w,h)
     color_img, depth_img: (w,h,c)
     '''
     combined_pcd = o3d.geometry.PointCloud()
-    cluster_indices = []   
+    cluster_indices = []
     cluster_idx = 0
     new_scores_per_cluster = []
     for i, (mask, score) in enumerate(zip(masks, scores)):
@@ -53,15 +54,15 @@ def clusters_from_masks_sim(masks, color_img, depth_img, camera_info, scores, vi
         pcd, ind = pcd.remove_statistical_outlier(nb_neighbors=50, std_ratio=0.01) # HYPER PARAM
         pcd, ind = pcd.remove_radius_outlier(nb_points=20, radius=0.005) # HYPER PARAM
 
-        if len(pcd.points)==0:
+        if len(pcd.points) == 0:
             continue
         labels = np.array(pcd.cluster_dbscan(eps=0.01, min_points=20)) # HYPER PARAM
-        if len(labels)==0:
+        if len(labels) == 0:
             continue
         max_label = labels.max()
-        if max_label<0:
+        if max_label < 0:
             continue
-        elif max_label>0: 
+        elif max_label > 0:
             for label in range(max_label+1):
                 inliers = np.argwhere(labels==label)
                 pcd_dbscan = pcd.select_by_index(inliers)
@@ -69,24 +70,25 @@ def clusters_from_masks_sim(masks, color_img, depth_img, camera_info, scores, vi
                     colors = np.zeros_like(pcd_dbscan.colors)
                     colors[:] = np.random.rand(3)
                     pcd_dbscan.colors = o3d.utility.Vector3dVector(colors)
-                cluster_indices = cluster_indices + [cluster_idx]*len(np.array(pcd_dbscan.points))
-                combined_pcd += pcd_dbscan  
+                cluster_indices = cluster_indices + [cluster_idx] * len(np.array(pcd_dbscan.points))
+                combined_pcd += pcd_dbscan
                 new_scores_per_cluster.append(score)
-                cluster_idx+=1  
+                cluster_idx += 1
         else:
             # For coloring clusters
             if visualize:
                 colors = np.zeros_like(pcd.colors)
                 colors[:] = np.random.rand(3)
                 pcd.colors = o3d.utility.Vector3dVector(colors)
-            cluster_indices = cluster_indices + [cluster_idx]*len(np.array(pcd.points))
-            combined_pcd += pcd    
+            cluster_indices = cluster_indices + [cluster_idx] * len(np.array(pcd.points))
+            combined_pcd += pcd
             new_scores_per_cluster.append(score)
-            cluster_idx+=1
+            cluster_idx += 1
     if visualize:
         o3d.visualization.draw_geometries([combined_pcd])
     return combined_pcd, cluster_indices, np.array(new_scores_per_cluster)
-    
+
+
 def rgbd_to_pcd(color_img, depth_img, camera_info):
     '''
     color_img, depth_img: (w,h,c)
@@ -108,43 +110,43 @@ def clusters_from_masks_field(masks, left_rectified, disparity_map, camera_info,
     stereo_baseline = -0.059634685
     camera_focal_length_px = camera_info.K[0,0]
     image_center_w = camera_info.K[0,2]
-    image_center_h = camera_info.K[1,2] 
+    image_center_h = camera_info.K[1,2]
     #image_height, image_width, _ = left_rectified.shape
 
     Q = np.float32([[1, 0,                          0,        -image_center_w],
-                    [0, 1,                          0,        -image_center_h], 
-                    [0, 0,                          0, camera_focal_length_px], 
+                    [0, 1,                          0,        -image_center_h],
+                    [0, 0,                          0, camera_focal_length_px],
                     [0, 0,         -1/stereo_baseline,                      0]])
-    
+
     points = cv2.reprojectImageTo3D(disparity_map, Q)
     #offset=0
     #points = points[offset:image_height+offset,offset:image_width+offset,:]
-    combined_pcd = o3d.geometry.PointCloud()    
-    cluster_idx = 0 
-    cluster_indices = []   
+    combined_pcd = o3d.geometry.PointCloud()
+    cluster_idx = 0
+    cluster_indices = []
     new_scores_per_cluster = []
     for i, (mask, score) in enumerate(zip(masks, scores)):
 
-        p_idx = np.asarray(np.where(mask)).T 
+        p_idx = np.asarray(np.where(mask)).T
         cluster_points = points[p_idx[:,0], p_idx[:,1]]
         cluster_color = left_rectified[p_idx[:,0], p_idx[:,1]]
 
         # Mask 1: Points that have positive depth
         m = cluster_points[:,2]>0
         cluster_points = cluster_points[m]
-        cluster_color = cluster_color[m]   
-        
+        cluster_color = cluster_color[m]
+
         # Mask 2: Points that are not -inf/inf
         m = ~np.isinf(cluster_points).any(axis=1)
         cluster_points = cluster_points[m]
-        cluster_color = cluster_color[m]    
-        
+        cluster_color = cluster_color[m]
+
         # Mask 3: Points that are within max_distance meters
         m = cluster_points[:,2]<max_distance
         cluster_points = cluster_points[m]
-        cluster_color = cluster_color[m]  
+        cluster_color = cluster_color[m]
 
-        pcd = o3d.geometry.PointCloud()        
+        pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(cluster_points)
         pcd.colors = o3d.utility.Vector3dVector(cluster_color/255)
 
@@ -154,12 +156,12 @@ def clusters_from_masks_field(masks, left_rectified, disparity_map, camera_info,
         if len(pcd.points)<100:
             continue
         labels = np.array(pcd.cluster_dbscan(eps=0.01, min_points=3)) # HYPER PARAM
-        if len(labels)==0:
+        if len(labels) == 0:
             continue
         max_label = labels.max()
-        if max_label<0:
+        if max_label < 0:
             continue
-        elif max_label>0: 
+        elif max_label > 0:
             for label in range(max_label+1):
                 inliers = np.argwhere(labels==label)
                 pcd_dbscan = pcd.select_by_index(inliers)
@@ -169,23 +171,24 @@ def clusters_from_masks_field(masks, left_rectified, disparity_map, camera_info,
                     pcd_dbscan.colors = o3d.utility.Vector3dVector(colors)
                 if len(pcd_dbscan.points)<200: # HERE JOHN
                     continue
-                cluster_indices = cluster_indices + [cluster_idx]*len(np.array(pcd_dbscan.points))
-                combined_pcd += pcd_dbscan  
+                cluster_indices = cluster_indices + [cluster_idx] * len(np.array(pcd_dbscan.points))
+                combined_pcd += pcd_dbscan
                 new_scores_per_cluster.append(score)
-                cluster_idx+=1  
+                cluster_idx += 1
         else:
             # For coloring clusters
             if visualize:
                 colors = np.zeros_like(pcd.colors)
                 colors[:] = np.random.rand(3)
                 pcd.colors = o3d.utility.Vector3dVector(colors)
-            cluster_indices = cluster_indices + [cluster_idx]*len(np.array(pcd.points))
-            combined_pcd += pcd    
+            cluster_indices = cluster_indices + [cluster_idx] * len(np.array(pcd.points))
+            combined_pcd += pcd
             new_scores_per_cluster.append(score)
-            cluster_idx+=1
+            cluster_idx += 1
     if visualize:
         o3d.visualization.draw_geometries([combined_pcd])
     return combined_pcd, cluster_indices, np.array(new_scores_per_cluster)
+
 
 def merge_masks(branch_masks, scores):
     flag = True
@@ -196,7 +199,7 @@ def merge_masks(branch_masks, scores):
             for j in range(num_masks):
                 if i==j:
                     continue
-                overlapping_pixels = np.sum(branch_masks[i]*branch_masks[j]) 
+                overlapping_pixels = np.sum(branch_masks[i]*branch_masks[j])
                 overlap_percentage = max(overlapping_pixels/np.sum(branch_masks[i]), overlapping_pixels/np.sum(branch_masks[j]))
                 if overlap_percentage>0.7:
                     branch_masks[j] = branch_masks[i]+branch_masks[j]
@@ -205,11 +208,11 @@ def merge_masks(branch_masks, scores):
                     break_flag = True
                     break
             if break_flag:
-                break  
+                break
         if not break_flag:
             flag=False
     return branch_masks, scores
-    
+
 
 def pipeline(frame_id, data_dict, mode, icp_tf=None):
     global pcd_combined
@@ -232,7 +235,7 @@ def pipeline(frame_id, data_dict, mode, icp_tf=None):
     t0 = time.time()
     branch_masks, scores = merge_masks(branch_masks, scores)
     print('MERGE MASKS: {}'.format(time.time()-t0))
-    
+
     t0 = time.time()
     if mode=='simulation':
         pcd, cluster_indices, scores = clusters_from_masks_sim(branch_masks, color_img, depth_img, camera_info, scores, visualize=visualize)
@@ -240,27 +243,28 @@ def pipeline(frame_id, data_dict, mode, icp_tf=None):
         pcd, cluster_indices, scores = clusters_from_masks_field(branch_masks, color_img, depth_img, camera_info, scores, max_distance=0.8, visualize=visualize)
 
     print('MASKS TO CLUSTERS: {}'.format(time.time()-t0))
-    if len(cluster_indices)==0:
+    if len(cluster_indices) == 0:
         return
-        
+
     t0 = time.time()
     edges, radius, scores = edge_extractor.extract_nurbs(pcd, cluster_indices, scores, ctrlpts_size=4, degree=1, visualize=visualize)
     print('EXTRACT EDGE: {}'.format(time.time()-t0))
-    
+
     edges_homo = np.ones((edges.reshape(-1,3).shape[0], 4))
-    edges_homo[:,:3] = edges.reshape(-1,3) 
+    edges_homo[:,:3] = edges.reshape(-1,3)
     edges_homo = edges_homo@transformation_matrix.T
     edges_combined.append(edges_homo[:,:3])
     radius_combined.append(radius)
     scores_combined.append(scores)
-    
+
     ##edge_extractor.plot_edges(edges, likelihood_pcd+pcd)
 
     pcd = pcd.transform(transformation_matrix)
     pcd_combined+=pcd
-    
+
+
 def pointcloud_registration(data_list):
-    
+
     voxel_size = 0.002
     filter_nb_points = 50
     filter_radius = 0.02
@@ -273,6 +277,7 @@ def pointcloud_registration(data_list):
     #reg.optimize_pose_graph()
     registered_pcd = reg.generate_pointclouds(out_voxel_size, out_filter_nb_points, out_filter_radius)
     return registered_pcd
+
 
 def pairwise_registration_p2p(source, target, tf_init=np.identity(4)):
 
@@ -290,7 +295,7 @@ def pairwise_registration_p2p(source, target, tf_init=np.identity(4)):
         source, target, threshold, tf_init,
         o3d.pipelines.registration.TransformationEstimationPointToPoint(),
         o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=3000))
-    transformation_icp = reg_p2p.transformation       
+    transformation_icp = reg_p2p.transformation
     return transformation_icp
 
 
@@ -301,14 +306,15 @@ def branch_filter(pcd):
     # Mask 5: Only keep red points
     mask = np.all((colors[:,1]<colors[:,0], colors[:,2]<colors[:,0]), axis=0)
     points = points[mask]
-    colors = colors[mask]  
+    colors = colors[mask]
 
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(points)
     pcd.colors = o3d.utility.Vector3dVector(colors)
-    
+
     return pcd
-    
+
+
 if __name__ == "__main__":
     if args.mode=='simulation':
         DATA_LIST = np.load('assets/tree_{}_{}.npy'.format(TREE_ID, LEAF_DENSITY), allow_pickle=True)
@@ -319,14 +325,14 @@ if __name__ == "__main__":
     DETECTRON = detectron.detectron_predictor(
         config_file='COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml',
         weights_path='models/detectron_branch_segmentation.pth',
-        num_classes=1, 
+        num_classes=1,
         score_threshold=score_threshold
     )
 
     icp_tf = None
     if args.mode=='field':
         bot_pcd_raw = pointcloud_registration(DATA_LIST[:33])
-        top_pcd_raw = pointcloud_registration(DATA_LIST[34:])   
+        top_pcd_raw = pointcloud_registration(DATA_LIST[34:])
         bot_pcd_branch = branch_filter(bot_pcd_raw)
         top_pcd_branch = branch_filter(top_pcd_raw)
         icp_tf = pairwise_registration_p2p(top_pcd_branch, bot_pcd_branch)
@@ -334,14 +340,20 @@ if __name__ == "__main__":
     for i, data_dict in enumerate(DATA_LIST):
         print('\nITER {}'.format(i))
         pipeline(i, data_dict, args.mode, icp_tf)
-    
+
     edges_combined = np.concatenate(edges_combined).reshape(-1,2,3)
     radius_combined = np.concatenate(radius_combined)
     scores_combined = np.concatenate(scores_combined)
 
     voxel_size = 0.002
-    likelihood_pcd, likelihood = construct_likelihood_map(edges_combined, radius_combined, scores_combined, voxel_size=voxel_size, visualize=False) 
-    
+    likelihood_pcd, likelihood = construct_likelihood_map(
+        edges_combined,
+        radius_combined,
+        scores_combined,
+        voxel_size=voxel_size,
+        visualize=False,
+    )
+
     tree_preprocessed = {}
     tree_preprocessed['edges'] = edges_combined
     tree_preprocessed['radius'] = radius_combined
@@ -353,7 +365,7 @@ if __name__ == "__main__":
     tree_preprocessed['voxel_size'] = voxel_size
     if args.mode=='simulation':
         tree_preprocessed['skeleton_gt'] = np.asarray(skeleton_pcd_gt.points)
-     
+
     computation_time = time.time() - t_start
     out_dir = 'assets/{}'.format(args.mode)
     os.makedirs(out_dir, exist_ok=True)
@@ -363,5 +375,3 @@ if __name__ == "__main__":
         np.save(os.path.join(out_dir, 'tree_{}_preproc.npy'.format(TREE_ID)), tree_preprocessed)
     with open('assets/{}/compute_time.txt'.format(args.mode), 'a') as file1:
         file1.write('{} {} {}\n'.format(TREE_ID, LEAF_DENSITY, computation_time))
-
-
