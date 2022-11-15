@@ -2,8 +2,128 @@ import copy
 import numpy as np
 import open3d as o3d
 import scipy
+import matplotlib.pyplot as plt
 import networkx as nx
-from modules.helper.visualization import LineMesh
+try:
+    from modules.helper.visualization import LineMesh
+except ModuleNotFoundError:
+    # TODO: Fix this
+    print("Couldn't load visualization module")
+
+
+def make_cloud(points, colors=None):
+    cloud = o3d.geometry.PointCloud()
+    cloud.points = o3d.utility.Vector3dVector(points)
+    if colors is not None:
+        cloud.colors = o3d.utility.Vector3dVector(colors)
+    return cloud
+
+
+def skeletonize(method, edges, radius, likelihood_values, likelihood_points,
+                likelihood_colors, voxel_size, clean=False):
+    '''
+    Arguments:
+        method: String, choice of ["default", "field", "mst", "ftsem"]
+            default: TODO
+            field: TODO
+            mst: TODO
+            ftsem: TODO
+        edges: TODO
+        radius: TODO
+        likelihood_values: TODO
+        likelihood_points: TODO
+        likelihood_colors: TODO
+        voxel_size: TODO
+        clean: TODO
+
+    '''
+
+    # These are only produced with certain methods, so make the default None
+    map_pcd = None
+    tree_mesh = None
+
+    if method in ['default', 'field']:
+        for voxel_size in np.arange(0.01, 0.1, 0.001):
+            # TODO: Shrink this code once it's running
+            map_pcd = make_cloud(likelihood_points, likelihood_colors)
+            map_vals_rgb = np.zeros(np.array(map_pcd.colors).shape)
+            map_vals_rgb[:, 0] = likelihood_values
+            map_pcd.colors = o3d.utility.Vector3dVector(map_vals_rgb)
+            map_vg = o3d.geometry.VoxelGrid.create_from_point_cloud(map_pcd, voxel_size=voxel_size)
+            map_points = np.asarray([
+                map_vg.origin + pt.grid_index * map_vg.voxel_size
+                for pt in map_vg.get_voxels()
+            ])
+            map_values = np.asarray([
+                pt.color[0] for pt in map_vg.get_voxels()
+            ])
+            if len(map_points) < 55000: # Limited by memory usage.
+                voxel_size = round(voxel_size, 3)
+                print(f"Selected Voxel Size {voxel_size} with {len(map_points)} likelihood nodes.")
+                break
+        else:
+            raise RuntimeError("Never found voxel size that met memory requirements")
+
+        map_colors = plt.get_cmap("jet")(map_values)[:,:3]
+        map_pcd = make_cloud(map_points, map_colors)
+        map_tree = UndirectedGraph(map_pcd)
+        map_tree.construct_skeleton_graph(voxel_size)
+
+        def fn_weight(u, v, d):
+            '''
+            u and v are two points in the likelihood map
+            We turn likelihood (high good) into cost (low good) with -log
+            '''
+            return -np.log((map_values[u] + map_values[v]) / 2)
+
+        observed_tree = construct_initial_skeleton(edges, radius)
+        merger = SkeletonMerger(observed_tree, map_tree, fn_weight)
+        main_tree = merger.main_tree
+
+        main_tree.pcd = laplacian_smoothing(main_tree.pcd, search_radius=0.015)
+        main_tree.nodes_array = np.array(main_tree.pcd.points)
+        #main_tree.laplacian_smoothing()
+
+        main_tree_pcd, radius = main_tree.distribute_equally(0.001) #0.0005 # update radius
+        tree_mesh = generate_sphere_mesh(main_tree_pcd, radius) # update_radius
+
+    elif method == 'mst':
+        if clean:
+            main_tree = construct_initial_clean_skeleton(edges, radius)
+            import ipdb; ipdb.set_trace()
+        else:
+            observed_tree = construct_initial_skeleton(edges, radius)
+            main_tree = UndirectedGraph(observed_tree.distribute_equally(0.01)[0], search_radius_scale=2)
+            main_tree.construct_initial_graphs()
+            main_tree.merge_components()
+        main_tree.minimum_spanning_tree()
+        main_tree.pcd = laplacian_smoothing(main_tree.pcd, search_radius=0.015)
+        main_tree.nodes_array = np.array(main_tree.pcd.points)
+        main_tree.laplacian_smoothing()
+        main_tree_pcd = main_tree.distribute_equally(0.001)[0]
+
+    elif method == 'ftsem':
+        observed_tree = construct_initial_skeleton(edges, radius)
+        main_tree = UndirectedGraph(observed_tree.distribute_equally(0.01)[0], search_radius_scale=2)
+        main_tree.construct_initial_graphs()
+        main_tree.merge_components()
+        connected = True
+        connection_count = 0
+        while connected:
+            connected = main_tree.breakpoint_connection()
+            connection_count += 1
+            print('{} breakpoints connected.'.format(connection_count))
+        main_tree.laplacian_smoothing()
+        main_tree_pcd = main_tree.distribute_equally(0.001)[0]
+
+    else:
+        raise ValueError(f"Found unexpected method {method}")
+
+    main_tree_colors = np.zeros_like(main_tree_pcd.points)
+    main_tree_colors[:,:2] = 1
+    main_tree_pcd.colors = o3d.utility.Vector3dVector(main_tree_colors)
+
+    return main_tree_pcd, map_pcd, tree_mesh
 
 
 def laplacian_smoothing(pcd, search_radius=0.01):
@@ -27,7 +147,15 @@ def laplacian_smoothing(pcd, search_radius=0.01):
     filtered_pcd.points = o3d.utility.Vector3dVector(np.array(filtered_points))
     return filtered_pcd
 
+
 def equal_spacing(pcd, radiuses): # update radius
+    '''
+    Basic idea is to diffuse points away from dense areas along the vector made
+    by their neighbors.
+    If a point is between two neighbors then make it the average, otherwise
+    leave it
+    '''
+
     unique_points, unique_index = np.unique(np.array(pcd.points), return_index=True, axis=0)
     radiuses = radiuses[unique_index] # update radius
     pcd = o3d.geometry.PointCloud()
@@ -38,12 +166,12 @@ def equal_spacing(pcd, radiuses): # update radius
     for point in np.asarray(pcd.points):
         [k, idx, dist] = pcd_tree.search_knn_vector_3d(point, 2)
         total_dist+=np.sqrt(dist[1])
-    radius = total_dist/num_points*10
+    radius = total_dist / num_points * 10
 
     equally_spaced_points = []
     for point in np.asarray(pcd.points):
         [k, idx, dist] = pcd_tree.search_knn_vector_3d(point, 3)
-        neighbor_points = np.asarray(pcd.points)[idx[1:], :] 
+        neighbor_points = np.asarray(pcd.points)[idx[1:], :]
         vec1 = neighbor_points[0] - point
         vec2 = neighbor_points[1] - point
         vec1_length = np.linalg.norm(vec1)
@@ -51,15 +179,15 @@ def equal_spacing(pcd, radiuses): # update radius
         if vec1_length>0 and vec2_length>0:
             vec1_normalized = vec1/vec1_length
             vec2_normalized = vec2/vec2_length
-            cosine_similarity = np.dot(vec1_normalized, vec2_normalized) 
-        else: 
+            cosine_similarity = np.dot(vec1_normalized, vec2_normalized)
+        else:
             cosine_similarity = 1
         if cosine_similarity<0 and max(vec1_length, vec2_length)<radius:
             new_point = np.sum(neighbor_points, axis=0)/2
             equally_spaced_points.append(new_point)
         else:
             equally_spaced_points.append(point)
-    
+
     equally_spaced_pcd = o3d.geometry.PointCloud()
     equally_spaced_pcd.points = o3d.utility.Vector3dVector(np.array(equally_spaced_points))
     equally_spaced_pcd_color = np.zeros_like(equally_spaced_points)
@@ -69,7 +197,15 @@ def equal_spacing(pcd, radiuses): # update radius
 
 
 class UndirectedGraph:
-    def __init__(self, pcd, radius=None, search_radius_scale=10):
+    def __init__(self, pcd, radius=None, search_radius_scale=10, graph=None):
+        '''
+        Arguments:
+            pcd: TODO
+            radius: TODO
+            search_radius_scale: TODO
+            graph: If not None, then this should be a networkx.Graph object. It
+                will be used to set the adjacency_matrix
+        '''
         self.pcd = pcd
         self.nodes_radius = np.zeros(len(pcd.points))
         if radius is not None:
@@ -77,23 +213,38 @@ class UndirectedGraph:
         self.nodes_array = np.array(pcd.points)
         self.kdtree = o3d.geometry.KDTreeFlann(pcd)
         self.num_nodes = len(self.nodes_array)
-        self.adjacency_matrix = np.zeros((self.num_nodes, self.num_nodes))
+        if graph is None:
+            self.adjacency_matrix = np.zeros((self.num_nodes, self.num_nodes))
+        else:
+            # TODO: Maybe in the future convert adjacency_matrix to sparse?
+            self.adjacency_matrix = nx.adjacency_matrix(graph).toarray()
+
+        # The search radius is the average neighbor-to-neighbor distance scaled
         total_dist = 0
         for node in self.nodes_array:
+            # By getting two neighbors we get the node itself and the nearest
             [k, idx, dist] = self.kdtree.search_knn_vector_3d(node, 2)
-            total_dist+=np.sqrt(dist[1])
-        self.search_radius = total_dist/self.num_nodes*search_radius_scale
-        
+            # Therefore dist[1] is the distance (squared) to the neighbor
+            total_dist += np.sqrt(dist[1])
+        self.search_radius = total_dist / self.num_nodes * search_radius_scale
+
     def construct_initial_graphs(self):
+        '''
+        Fills in self.adjacency_matrix by connected nodes up to their nearest
+        neighbor, up to a search radius.
+        '''
         self.visited_nodes = set()
         for loop_current_node_idx, current_node in enumerate(self.nodes_array):
             self._construct_initial_graph_recursion(loop_current_node_idx)
-     
+
     def _construct_initial_graph_recursion(self, current_node_idx):
         if current_node_idx in self.visited_nodes:
-            return 
-        self.visited_nodes.add(current_node_idx)            
-        [k, idx, dist_sq] = self.kdtree.search_radius_vector_3d(self.nodes_array[current_node_idx], self.search_radius)
+            return
+        self.visited_nodes.add(current_node_idx)
+        [k, idx, dist_sq] = self.kdtree.search_radius_vector_3d(
+            self.nodes_array[current_node_idx],
+            self.search_radius,
+        )
         for neighbor_node_idx in idx:
             if neighbor_node_idx not in self.visited_nodes:
                 self.adjacency_matrix[current_node_idx, neighbor_node_idx] = 1
@@ -104,26 +255,29 @@ class UndirectedGraph:
 
     def construct_skeleton_graph(self, voxel_size):
         for current_node_idx, current_node in enumerate(self.nodes_array):
-            [k, neighbor_idx, dist_sq] = self.kdtree.search_radius_vector_3d(self.nodes_array[current_node_idx], voxel_size*np.sqrt(3)*1.1)
+            [k, neighbor_idx, dist_sq] = self.kdtree.search_radius_vector_3d(
+                self.nodes_array[current_node_idx],
+                voxel_size*np.sqrt(3) * 1.1,
+            )
             for neighbor_node_idx, dist in zip(neighbor_idx[1:], np.sqrt(dist_sq[1:])):
                 self.adjacency_matrix[current_node_idx, neighbor_node_idx] = dist
                 self.adjacency_matrix[neighbor_node_idx, current_node_idx] = dist
- 
+
     def get_connected_components(self):
-        return scipy.sparse.csgraph.connected_components(self.adjacency_matrix)  
+        return scipy.sparse.csgraph.connected_components(self.adjacency_matrix)
 
     def visualize_adjacency_matrix(self, pcd=None):
-        num_components, connected_components =  self.get_connected_components()
+        num_components, connected_components = self.get_connected_components()
         combined_pcd = o3d.geometry.PointCloud()
         for i in range(num_components):
             result = np.where(connected_components==i)[0]
             component = self.nodes_array[result]
             component_pcd = o3d.geometry.PointCloud()
-            component_pcd.points = o3d.utility.Vector3dVector(component)    
+            component_pcd.points = o3d.utility.Vector3dVector(component)
             component_pcd_color = np.zeros_like(component)
-            component_pcd_color[:] = np.random.uniform(0,1,3)   
+            component_pcd_color[:] = np.random.uniform(0,1,3)
             component_pcd.colors = o3d.utility.Vector3dVector(component_pcd_color)
-            combined_pcd+=component_pcd
+            combined_pcd += component_pcd
         if not pcd:
             o3d.visualization.draw_geometries([combined_pcd])
         else:
@@ -131,30 +285,39 @@ class UndirectedGraph:
         return combined_pcd
 
     def merge_components(self):
+        '''
+        Searches through connected components for nearest neighbors that are
+        closer than the search radius (a little bigger than the voxel size),
+        and connect those neighbors.
+
+        At the end there will may still be multiple connected components but
+        they will be separated by the search radius.
+        '''
+
         no_change = False
         while not no_change:
-            num_components, connected_components =  self.get_connected_components()
-            if num_components==1:
+            num_components, connected_components = self.get_connected_components()
+            if num_components == 1:
                 break
             print('Merging components. Components remaining:', num_components)
             merged = False
             for i in range(num_components):
-                component_node_indices = np.where(connected_components==i)[0]
-                other_node_indices = np.where(connected_components!=i)[0]
+                component_node_indices = np.where(connected_components == i)[0]
+                other_node_indices = np.where(connected_components != i)[0]
                 other_nodes = self.nodes_array[other_node_indices]
                 other_pcd = o3d.geometry.PointCloud()
-                other_pcd.points = o3d.utility.Vector3dVector(other_nodes)  
+                other_pcd.points = o3d.utility.Vector3dVector(other_nodes)
                 other_tree = o3d.geometry.KDTreeFlann(other_pcd)
                 min_dist = float('inf')
                 for node_idx in component_node_indices:
                     node = self.nodes_array[node_idx]
                     [k, idx, dist_sq] = other_tree.search_knn_vector_3d(node, 1)
                     dist = np.sqrt(dist_sq[0])
-                    if dist<min_dist:
+                    if dist < min_dist:
                         closest_other_idx = other_node_indices[idx[0]]
                         closest_component_idx = node_idx
                         min_dist = dist
-                if min_dist<self.search_radius:
+                if min_dist < self.search_radius:
                     assert(self.adjacency_matrix[closest_component_idx, closest_other_idx]!=1)
                     self.adjacency_matrix[closest_component_idx, closest_other_idx] = 1
                     self.adjacency_matrix[closest_other_idx, closest_component_idx] = 1
@@ -164,6 +327,10 @@ class UndirectedGraph:
                 no_change = True
 
     def bridge_components(self, new_nodes, head_idx, tail_idx):
+        '''
+        Update the adjacency matrix.
+        '''
+
         new_nodes = np.array(new_nodes)
         num_new_nodes = len(new_nodes)
         new_node_indices = np.array(range(self.num_nodes, self.num_nodes+num_new_nodes))
@@ -177,14 +344,14 @@ class UndirectedGraph:
 
         # Update class properties
         self.nodes_array = np.concatenate((self.nodes_array, new_nodes), axis=0)
-        self.pcd.points = o3d.utility.Vector3dVector(self.nodes_array)    
+        self.pcd.points = o3d.utility.Vector3dVector(self.nodes_array)
         self.kdtree = o3d.geometry.KDTreeFlann(self.pcd)
         self.num_nodes = len(self.nodes_array)
-        
+
         new_adjacency_matrix_size = self.adjacency_matrix.shape[0]+num_new_nodes
         new_adjacency_matrix = np.zeros((new_adjacency_matrix_size, new_adjacency_matrix_size))
         new_adjacency_matrix[:self.adjacency_matrix.shape[0], :self.adjacency_matrix.shape[1]] = self.adjacency_matrix 
-        self.adjacency_matrix = new_adjacency_matrix        
+        self.adjacency_matrix = new_adjacency_matrix
 
         # Add bridge connections
         self.adjacency_matrix[head_idx, new_node_indices[0]] = 1
@@ -203,7 +370,7 @@ class UndirectedGraph:
             if np.linalg.norm(self.nodes_array[edge_idx[0]]-self.nodes_array[edge_idx[1]])>0.008*0.2:
                 edge_node = [self.nodes_array[edge_idx[0]], self.nodes_array[edge_idx[1]]]
                 edge_node_list.append(edge_node)
-        edge_node_array = np.array(edge_node_list) 
+        edge_node_array = np.array(edge_node_list)
         return edge_node_array
 
     def visualize_tree(self, pcd=None):
@@ -225,9 +392,9 @@ class UndirectedGraph:
         radius.append(self.nodes_radius[0]) # update radius
         remaining_dist = 0
         for i, edge in enumerate(dfs):
-            e0 = self.nodes_array[edge[0]] 
+            e0 = self.nodes_array[edge[0]]
             e1 = self.nodes_array[edge[1]]
-            
+
             r0 = self.nodes_radius[edge[0]] # update radius
             r1 = self.nodes_radius[edge[1]] # update radius
 
@@ -288,10 +455,10 @@ class UndirectedGraph:
         for i in range(2):
             comp_nodes = self.nodes_array[np.argwhere(connected_components[1]==values[i])].reshape(-1,3)
             z = np.min(comp_nodes[:,2])
-            if z<min_z:
+            if z < min_z:
                 main_branch_comp_id = values[i]
                 min_z = z
-        
+
         # 2. Filter branches: Only keep branches with nodes > P_T
         P_T = 4
         theta_T = 120 # degrees
@@ -417,7 +584,7 @@ class UndirectedGraph:
                 m_vectors = m_nodes[:2]-m_nodes[1:]
                 m = np.mean(m_vectors, axis=0)
                 m_normalized = m/np.linalg.norm(m)
-                
+
                 n_nodes = self.nodes_array[main_branch_parent_candidate]
                 n_vectors = n_nodes[:2]-n_nodes[1:]
                 n = np.mean(n_vectors, axis=0)
@@ -440,7 +607,6 @@ class UndirectedGraph:
                 abg_candidates.append([alpha_deg, beta_deg, gamma_deg])        
         return bd, np.array(abg_candidates)    
 
-
     def get_breakpoints(self, component_id, connected_components):
         branch_node_indices = np.argwhere(connected_components[1]==component_id)
         breakpoints_node_indices = []
@@ -451,16 +617,21 @@ class UndirectedGraph:
 
     # MST
     def minimum_spanning_tree(self):
-        fully_connected_weighted_adj_mat = np.zeros_like(self.adjacency_matrix) 
-        for i in range(self.num_nodes-1):
-            for j in range(i+1, self.num_nodes):
-                weight = np.linalg.norm(self.nodes_array[i]-self.nodes_array[j])
-                fully_connected_weighted_adj_mat[i,j]=weight
-                fully_connected_weighted_adj_mat[j,i]=weight
+
+        print("Building connected graph")
+        fully_connected_weighted_adj_mat = np.zeros_like(self.adjacency_matrix)
+        for i in range(self.num_nodes - 1):
+            for j in range(i + 1, self.num_nodes):
+                weight = np.linalg.norm(self.nodes_array[i] - self.nodes_array[j])
+                fully_connected_weighted_adj_mat[i, j] = weight
+                fully_connected_weighted_adj_mat[j, i] = weight
         G = nx.from_numpy_array(fully_connected_weighted_adj_mat)
+
+        print("Calculating MST")
         T = nx.minimum_spanning_tree(G)
-        
-        mst_adj_mat = np.zeros_like(self.adjacency_matrix) 
+
+        print("Producing MST matrix")
+        mst_adj_mat = np.zeros_like(self.adjacency_matrix)
         for edge in sorted(T.edges(data=True)):
             mst_adj_mat[edge[0],edge[1]] = 1
             mst_adj_mat[edge[1],edge[0]] = 1
@@ -469,6 +640,12 @@ class UndirectedGraph:
 
 class SkeletonMerger:
     def __init__(self, main_tree, likelihood_map, fn_weights):
+        '''
+        Arguments:
+            main_tree: UndirectedGraph
+            likelihood_map: UndirectedGraph
+            fn_weights: Takes in (u, v, d) and outputs cost
+        '''
         self.main_tree = main_tree
         self.likelihood_map = likelihood_map
         self.fn_weights = fn_weights
@@ -486,19 +663,26 @@ class SkeletonMerger:
         self.nodes_association = np.full(self.likelihood_map.num_nodes, -1)
         main_tree_connected_components = self.main_tree.get_connected_components()
         for map_node_idx, map_node in enumerate(self.likelihood_map.nodes_array):
-            [k, main_tree_idx, dist_sq] = self.main_tree.kdtree.search_radius_vector_3d(map_node, self.main_tree.search_radius) 
-            if k>0:
-                self.nodes_association[map_node_idx] = main_tree_connected_components[1][main_tree_idx[0]]
-        
-        # 2. Get component ID in order of lowest component to highest component in euclidean space
+            [k, main_tree_idx, dist_sq] = self.main_tree.kdtree.search_radius_vector_3d(
+                map_node,
+                self.main_tree.search_radius,
+            )
+            # NOTE: We think this is associating each point in the likelihood
+            # map to the connected component ID
+            if k > 0:
+                self.nodes_association[map_node_idx] = \
+                    main_tree_connected_components[1][main_tree_idx[0]]
+
+        # 2. Get component ID in order of lowest component in to highest
+        #    component in euclidean space
         component_min_height_list = []
         for component_id in range(main_tree_connected_components[0]):
             component_indices = np.where(main_tree_connected_components[1]==component_id)[0]
             component_points_array = self.main_tree.nodes_array[component_indices]
+            # Get the point with the lowest Z value
             min_height_in_component = np.min(component_points_array[:,2])
             component_min_height_list.append(min_height_in_component)
         self.component_id_root_order = np.argsort(component_min_height_list)
-        return
 
     def merge_shortest_path_components(self):
         for component_id in self.component_id_root_order:
@@ -506,14 +690,25 @@ class SkeletonMerger:
             root_skeleton_nodes_idx = np.where(self.nodes_association==component_id)[0]
             if len(root_skeleton_nodes_idx)==0:
                 continue
+            # These are likelihood points that have been claimed by some other
+            # segment
             valid_targets = np.where(np.all([self.nodes_association!=component_id, self.nodes_association!=-1], axis=0))[0]
-            
+
             # 2. Compute path for all nodes and find shortest path
             nx_graph = nx.from_numpy_matrix(self.likelihood_map.adjacency_matrix, create_using=nx.DiGraph())
-            path_lengths, paths = nx.multi_source_dijkstra(nx_graph, set(root_skeleton_nodes_idx), target=None, cutoff=None, weight=self.fn_weights)
+            # Exhaustive pathing from the source nodes
+            path_lengths, paths = nx.multi_source_dijkstra(
+                # This is all nodes, not just valid targets
+                G=nx_graph,
+                # All likelihood points associated with the current root cluster
+                sources=set(root_skeleton_nodes_idx),
+                target=None,
+                cutoff=None,
+                weight=self.fn_weights,
+            )
 
             shortest_path_length = float('inf')
-            for i, target in enumerate(valid_targets):
+            for target in valid_targets:
                 try:
                     path_length = path_lengths[target]
                 except KeyError:
@@ -526,35 +721,39 @@ class SkeletonMerger:
                     return False
                 else:
                     continue
-            shortest_path_idx = paths[shortest_target]
-            
-            print('Shortest Path:', shortest_path_length, shortest_path_idx)
-            
-            shortest_path_nodes = self.likelihood_map.nodes_array[shortest_path_idx]
+            # This is the a list of nodes that steps through the graph
+            shortest_path_indices = paths[shortest_target]
+
+            print('Shortest Path:', shortest_path_length, shortest_path_indices)
+
+            shortest_path_nodes = self.likelihood_map.nodes_array[shortest_path_indices]
             head_node, tail_node = shortest_path_nodes[0], shortest_path_nodes[-1]
-            [k, head_main_tree_idx, _] = self.main_tree.kdtree.search_knn_vector_3d(head_node, 1) 
-            [k, tail_main_tree_idx, _] = self.main_tree.kdtree.search_knn_vector_3d(tail_node, 1) 
+            [k, head_main_tree_idx, _] = self.main_tree.kdtree.search_knn_vector_3d(head_node, 1)
+            [k, tail_main_tree_idx, _] = self.main_tree.kdtree.search_knn_vector_3d(tail_node, 1)
             head_main_tree_idx, tail_main_tree_idx = head_main_tree_idx[0], tail_main_tree_idx[0]
             self.main_tree.bridge_components(shortest_path_nodes, head_main_tree_idx, tail_main_tree_idx)
             return True
 
     def plot_association(self):
         skeleton_pcd = o3d.geometry.PointCloud()
-        skeleton_pcd.points = o3d.utility.Vector3dVector(self.likelihood_map.nodes_array)    
+        skeleton_pcd.points = o3d.utility.Vector3dVector(self.likelihood_map.nodes_array)
         skeleton_pcd_colors = np.zeros_like(skeleton_pcd.points)
         no_association_idx = np.where(self.nodes_association==-1)[0]
         association_idx = np.where(self.nodes_association!=-1)[0]
         skeleton_pcd_colors[no_association_idx] = np.array([1,0,0])
         skeleton_pcd_colors[association_idx] = np.array([0,0,1])
         skeleton_pcd.colors = o3d.utility.Vector3dVector(skeleton_pcd_colors)
-        main_pcd = self.main_tree.visualize_adjacency_matrix()    
+        main_pcd = self.main_tree.visualize_adjacency_matrix()
         o3d.visualization.draw_geometries([skeleton_pcd, main_pcd])
-        
 
-    def get_main_tree(self):
-        return self.main_tree
 
-def construct_initial_skeleton(edges, radius): 
+def construct_initial_skeleton(edges, radius):
+    '''
+    First converst edges into a series of linearly spaced points along the
+    edges, which are presumed to overlap.
+    Does Laplacian smoothing on the overlapped and sampled edges.
+    '''
+
     # Convert edges into points
     edges = np.array(edges)
     edges = np.concatenate(edges)
@@ -564,7 +763,7 @@ def construct_initial_skeleton(edges, radius):
     radiuses = [] # update radius
     for edge, r in zip(edges, radius):  # update radius
         vec = edge[1]-edge[0]
-        vec_length = np.linalg.norm(vec) 
+        vec_length = np.linalg.norm(vec)
         if vec_length==0:
             points.append(edge[0])
             radiuses.append(r) # update radius
@@ -590,11 +789,67 @@ def construct_initial_skeleton(edges, radius):
     equally_spaced_pcd = copy.deepcopy(filtered_pcd)
     for i in range(10):
         equally_spaced_pcd, radiuses = equal_spacing(equally_spaced_pcd, radiuses) # update radius
-    
+
     main_tree = UndirectedGraph(equally_spaced_pcd, radiuses) # update radius
     main_tree.construct_initial_graphs()
     main_tree.merge_components()
-    return main_tree 
+    return main_tree
+
+
+def construct_initial_clean_skeleton(edges, radii):
+    '''
+    Similar to construct_initial_skeleton, but it assumes that the edges are
+    already essentially in a graph format, with overlapping points where the
+    graph indices should be.
+
+    In contrast, construct_initial_skeleton was designed to be run on edges
+    that may be arbitrarily placed and have significant overlapping.
+
+    NOTE: right now all points that match to 6 decimal points are considered
+    the same, if that needs to be more flexible it could be changed.
+
+    Arguments:
+        edges: Array of shape (M, 2, 3), where M is the number of edges and
+            each edge has two associated points. Note that non-leaf points will
+            show up in two edges.
+        radii: Array of shape (M,), where M is the number of edges. Contains
+            the radius of that edge in meters.
+
+    Returns:
+        UndirectedGraph object that TODO
+    '''
+
+    def pt_to_key(point):
+        '''Take a 3D point and make it a hashable key.'''
+        return f"({point[0]:.6f},{point[1]:.6f},{point[2]:.6f})"
+
+    # Take our representation of edges/radii and turn them into
+    # 1) points
+    # 2) radii reindexed by points
+    # 3) a networkx undirected graph
+    points = []
+    reindexed_radii = []
+    seen = {}
+    graph = nx.Graph()
+    for edge, radius in zip(edges, radii):
+        for point in edge:
+            key = pt_to_key(point)
+            if key not in seen:
+                seen[key] = len(points)
+                points.append(point)
+                reindexed_radii.append(radius)
+                graph.add_node(seen[key])
+        e0, e1 = edge
+        graph.add_edge(seen[pt_to_key(e0)],
+                       seen[pt_to_key(e1)],
+                       weight=np.linalg.norm(e1 - e0))
+
+    return UndirectedGraph(
+        pcd=make_cloud(np.array(points)),
+        radius=np.array(reindexed_radii),
+        graph=graph,
+    )
+
 
 def generate_sphere_mesh(pcd, radius):
     tree_mesh = o3d.geometry.TriangleMesh()
