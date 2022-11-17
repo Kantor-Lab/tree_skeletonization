@@ -7,8 +7,7 @@ import networkx as nx
 try:
     from modules.helper.visualization import LineMesh
 except ModuleNotFoundError:
-    # TODO: Fix this
-    print("Couldn't load visualization module")
+    from process_2021.tree_skeletonization.modules.helper.visualization import LineMesh
 
 
 def make_cloud(points, colors=None):
@@ -20,7 +19,7 @@ def make_cloud(points, colors=None):
 
 
 def skeletonize(method, edges, radius, likelihood_values, likelihood_points,
-                likelihood_colors, voxel_size, clean=False):
+                likelihood_colors, voxel_size, clean=False, viz_dir=None):
     '''
     Arguments:
         method: String, choice of ["default", "field", "mst", "ftsem"]
@@ -90,17 +89,21 @@ def skeletonize(method, edges, radius, likelihood_values, likelihood_points,
     elif method == 'mst':
         if clean:
             main_tree = construct_initial_clean_skeleton(edges, radius)
-            import ipdb; ipdb.set_trace()
         else:
             observed_tree = construct_initial_skeleton(edges, radius)
             main_tree = UndirectedGraph(observed_tree.distribute_equally(0.01)[0], search_radius_scale=2)
             main_tree.construct_initial_graphs()
             main_tree.merge_components()
+        main_tree.save_viz(viz_dir, "_preMST")  # REMOVE
         main_tree.minimum_spanning_tree()
+        main_tree.save_viz(viz_dir, "_postMST")  # REMOVE
         main_tree.pcd = laplacian_smoothing(main_tree.pcd, search_radius=0.015)
         main_tree.nodes_array = np.array(main_tree.pcd.points)
+        main_tree.num_nodes = len(main_tree.nodes_array)
         main_tree.laplacian_smoothing()
+        main_tree.save_viz(viz_dir, "_postLaplace")  # REMOVE
         main_tree_pcd = main_tree.distribute_equally(0.001)[0]
+        main_tree.save_viz(viz_dir, "_postDistribute")  # REMOVE
 
     elif method == 'ftsem':
         observed_tree = construct_initial_skeleton(edges, radius)
@@ -266,7 +269,14 @@ class UndirectedGraph:
     def get_connected_components(self):
         return scipy.sparse.csgraph.connected_components(self.adjacency_matrix)
 
-    def visualize_adjacency_matrix(self, pcd=None):
+    def save_viz(self, viz_dir, suffix=""):
+        combined_pcd = self.visualize_adjacency_matrix(display=False)
+        o3d.io.write_point_cloud(str(viz_dir.joinpath(f"adj_matrix{suffix}.ply")), combined_pcd)
+        line_mesh, pcd = self.visualize_tree(display=False)
+        o3d.io.write_triangle_mesh(str(viz_dir.joinpath(f"tree_mesh{suffix}.ply")), line_mesh)
+        o3d.io.write_point_cloud(str(viz_dir.joinpath(f"tree_pcd{suffix}.ply")), pcd)
+
+    def visualize_adjacency_matrix(self, pcd=None, display=True):
         num_components, connected_components = self.get_connected_components()
         combined_pcd = o3d.geometry.PointCloud()
         for i in range(num_components):
@@ -278,10 +288,11 @@ class UndirectedGraph:
             component_pcd_color[:] = np.random.uniform(0,1,3)
             component_pcd.colors = o3d.utility.Vector3dVector(component_pcd_color)
             combined_pcd += component_pcd
-        if not pcd:
-            o3d.visualization.draw_geometries([combined_pcd])
-        else:
-            o3d.visualization.draw_geometries([combined_pcd, pcd])
+        if display:
+            if not pcd:
+                o3d.visualization.draw_geometries([combined_pcd])
+            else:
+                o3d.visualization.draw_geometries([combined_pcd, pcd])
         return combined_pcd
 
     def merge_components(self):
@@ -373,15 +384,19 @@ class UndirectedGraph:
         edge_node_array = np.array(edge_node_list)
         return edge_node_array
 
-    def visualize_tree(self, pcd=None):
+    def visualize_tree(self, pcd=None, display=True):
         if pcd is None:
             pcd = self.pcd
         edges = self.get_edgelist()
         edge_points = edges.reshape(-1,3)
         edge_lines = np.array([[i,i+1] for i in range(0, len(edge_points), 2)])
         edge_colors = [[1, 0, 0] for i in range(len(edge_lines))]
-        line_mesh = LineMesh(edge_points, edge_lines, edge_colors, radius=0.001).cylinder_segments 
-        o3d.visualization.draw_geometries([*line_mesh, pcd]) # self.pcd
+        line_mesh = o3d.geometry.TriangleMesh()
+        for line in LineMesh(edge_points, edge_lines, edge_colors, radius=0.001).cylinder_segments:
+            line_mesh += line
+        if display:
+            o3d.visualization.draw_geometries([line_mesh, pcd])
+        return line_mesh, pcd
 
     def distribute_equally(self, spacing):
         nx_graph = nx.from_numpy_matrix(self.adjacency_matrix, create_using=nx.DiGraph())
@@ -430,15 +445,15 @@ class UndirectedGraph:
 
     def laplacian_smoothing(self):
         smoothed_nodes_array = np.zeros_like(self.nodes_array)
-        total_eucledian_change = float('inf')
-        while total_eucledian_change > 0.01:
-            total_eucledian_change = 0
-            for i in range(self.num_nodes):
+        total_euclidean_change = float('inf')
+        while total_euclidean_change > 0.01:
+            total_euclidean_change = 0
+            for i in range(self.nodes_array.shape[0]):
                 adjacent_nodes = np.argwhere(self.adjacency_matrix[i])
-                if len(adjacent_nodes)>1:
+                if len(adjacent_nodes) > 1:
                     new_node_position = np.mean(self.nodes_array[adjacent_nodes], axis=0)
                     smoothed_nodes_array[i] = new_node_position
-                    total_eucledian_change+=np.linalg.norm(self.nodes_array[i]-new_node_position)
+                    total_euclidean_change += np.linalg.norm(self.nodes_array[i] - new_node_position)
                 else:
                     smoothed_nodes_array[i] = self.nodes_array[i]
             self.nodes_array = smoothed_nodes_array
