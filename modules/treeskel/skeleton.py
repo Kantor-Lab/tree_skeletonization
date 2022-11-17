@@ -1,9 +1,11 @@
 import copy
+import distinctipy
 import numpy as np
 import open3d as o3d
 import scipy
 import matplotlib.pyplot as plt
 import networkx as nx
+
 try:
     from modules.helper.visualization import LineMesh
 except ModuleNotFoundError:
@@ -41,7 +43,7 @@ def skeletonize(method, edges, radius, likelihood_values, likelihood_points,
     map_pcd = None
     tree_mesh = None
 
-    if method in ['default', 'field']:
+    if method in ["default", "field"]:
         map_pcd = make_cloud(likelihood_points, likelihood_colors)
         map_vals_rgb = np.zeros_like(np.array(map_pcd.colors))
         map_vals_rgb[:, 0] = likelihood_values
@@ -116,18 +118,25 @@ def skeletonize(method, edges, radius, likelihood_values, likelihood_points,
         main_tree.save_viz(viz_dir, "_postDistribute", main_tree_pcd)  # REMOVE
 
     elif method == "ftsem":
-        observed_tree = construct_initial_skeleton(edges, radius)
-        main_tree = UndirectedGraph(observed_tree.distribute_equally(0.01)[0], search_radius_scale=2)
-        main_tree.construct_initial_graphs()
-        main_tree.merge_components()
+        if clean:
+            main_tree = construct_initial_clean_skeleton(edges, radius)
+        else:
+            observed_tree = construct_initial_skeleton(edges, radius)
+            main_tree = UndirectedGraph(observed_tree.distribute_equally(0.01)[0], search_radius_scale=2)
+            main_tree.construct_initial_graphs()
+            main_tree.merge_components()
+        main_tree.save_viz(viz_dir, "_preFTSEM")  # REMOVE
         connected = True
         connection_count = 0
         while connected:
             connected = main_tree.breakpoint_connection()
             connection_count += 1
             print('{} breakpoints connected.'.format(connection_count))
+        main_tree.save_viz(viz_dir, "_postFTSEM")  # REMOVE
         main_tree.laplacian_smoothing()
+        main_tree.save_viz(viz_dir, "_postLaplace")  # REMOVE
         main_tree_pcd = main_tree.distribute_equally(0.001)[0]
+        main_tree.save_viz(viz_dir, "_postDistribute", main_tree_pcd)  # REMOVE
 
     else:
         raise ValueError(f"Found unexpected method {method}")
@@ -303,23 +312,17 @@ class UndirectedGraph:
         o3d.io.write_point_cloud(str(viz_dir.joinpath(f"tree_pcd{suffix}.ply")), pcd)
 
     def visualize_adjacency_matrix(self, pcd=None, display=True):
-        num_components, connected_components = self.get_connected_components()
+        num_components, components = self.get_connected_components()
         combined_pcd = o3d.geometry.PointCloud()
-        for i in range(num_components):
-            result = np.where(connected_components==i)[0]
-            component = self.nodes_array[result]
-            component_pcd = o3d.geometry.PointCloud()
-            component_pcd.points = o3d.utility.Vector3dVector(component)
-            component_pcd_color = np.zeros_like(component)
-            # TODO: Make this a maximum distance cmap
-            component_pcd_color[:] = np.random.uniform(0,1,3)
-            component_pcd.colors = o3d.utility.Vector3dVector(component_pcd_color)
-            combined_pcd += component_pcd
+        for i, color in enumerate(distinctipy.get_colors(num_components)):
+            component = self.nodes_array[np.where(components == i)[0]]
+            combined_pcd += make_cloud(points=component,
+                                       colors=np.ones_like(component)*color)
         if display:
-            if not pcd:
-                o3d.visualization.draw_geometries([combined_pcd])
-            else:
-                o3d.visualization.draw_geometries([combined_pcd, pcd])
+            clouds = [combined_pcd]
+            if pcd is not None:
+                clouds.append(pcd)
+            o3d.visualization.draw_geometries(clouds)
         return combined_pcd
 
     def merge_components(self):
@@ -529,9 +532,10 @@ class UndirectedGraph:
         main_branch_kdtree = o3d.geometry.KDTreeFlann(main_branch_pcd)
 
         # Main Loop
-        main_branch_breakpoint_indicies = self.get_breakpoints(main_branch_comp_id, connected_components)
-        main_branch_breakpoint_coordinates = self.nodes_array[main_branch_breakpoint_indicies]
-        
+        # TODO: This line is returning [] on grapevines
+        main_branch_breakpoint_indices = self.get_breakpoints(main_branch_comp_id, connected_components)
+        main_branch_breakpoint_coordinates = self.nodes_array[main_branch_breakpoint_indices]
+
         for branch_comp_id in B_list:
             breakpoint_indicies = self.get_breakpoints(branch_comp_id, connected_components)
             break_point_coordinates = self.nodes_array[breakpoint_indicies]
@@ -539,7 +543,7 @@ class UndirectedGraph:
             for P_j in breakpoint_indicies: # For all breakpoints P_j in B_i
                 P_j_coordinate = self.nodes_array[P_j]
                 # Step 2: q_k <- Find 5 closest breakpoints in mainbranch
-                q_k_node_indices = main_branch_breakpoint_indicies[np.argsort(np.linalg.norm(main_branch_breakpoint_coordinates-P_j_coordinate, axis=1))]
+                q_k_node_indices = main_branch_breakpoint_indices[np.argsort(np.linalg.norm(main_branch_breakpoint_coordinates-P_j_coordinate, axis=1))]
                 if len(q_k_node_indices)>5:
                      q_k_node_indices = q_k_node_indices[:5]
                 # Step 3: np <- Find closest point in mainbranch from P_j where alpha>theta_T
@@ -551,7 +555,7 @@ class UndirectedGraph:
                     if np.any(abg_candidates[:,0]>theta_T):
                         NP = main_branch_idx
                         break
-                
+
                 # Step 4: Calculate bdabg for q_k
                 bdabg_k_candidates = []
                 for q_k_idx in q_k_node_indices:
