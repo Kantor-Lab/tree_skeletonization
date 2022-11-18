@@ -75,7 +75,7 @@ def skeletonize(method, edges, radius, likelihood_values, likelihood_points,
         # the voxel size radius
         map_tree = UndirectedGraph(map_pcd)
         map_tree.construct_skeleton_graph(voxel_size)
-        map_tree.save_viz(viz_dir, "_LIKELIHOODMAP", linecolor=(0, 0, 1))  # REMOVE
+        # map_tree.save_viz(viz_dir, "_LIKELIHOODMAP", linecolor=(0, 0, 1))  # REMOVE
 
         def fn_weight(u, v, d):
             '''
@@ -89,10 +89,10 @@ def skeletonize(method, edges, radius, likelihood_values, likelihood_points,
             observed_tree = construct_initial_clean_skeleton(edges, radius)
         else:
             observed_tree = construct_initial_skeleton(edges, radius)
-        observed_tree.save_viz(viz_dir, "_PRESKEL")  # REMOVE
+        # observed_tree.save_viz(viz_dir, "_PRESKEL")  # REMOVE
         merger = SkeletonMerger(observed_tree, map_tree, fn_weight)
         main_tree = merger.main_tree
-        main_tree.save_viz(viz_dir, "_MERGE")  # REMOVE
+        # main_tree.save_viz(viz_dir, "_MERGE")  # REMOVE
 
         main_tree.pcd = laplacian_smoothing(main_tree.pcd, search_radius=0.015)
         main_tree.nodes_array = np.array(main_tree.pcd.points)
@@ -109,16 +109,16 @@ def skeletonize(method, edges, radius, likelihood_values, likelihood_points,
             main_tree = UndirectedGraph(observed_tree.distribute_equally(0.01)[0], search_radius_scale=2)
             main_tree.construct_initial_graphs()
             main_tree.merge_components()
-        main_tree.save_viz(viz_dir, "_preMST")  # REMOVE
+        # main_tree.save_viz(viz_dir, "_preMST")  # REMOVE
         main_tree.minimum_spanning_tree()
-        main_tree.save_viz(viz_dir, "_postMST")  # REMOVE
+        # main_tree.save_viz(viz_dir, "_postMST")  # REMOVE
         main_tree.pcd = laplacian_smoothing(main_tree.pcd, search_radius=0.015)
         main_tree.nodes_array = np.array(main_tree.pcd.points)
         main_tree.num_nodes = len(main_tree.nodes_array)
         main_tree.laplacian_smoothing()
-        main_tree.save_viz(viz_dir, "_postLaplace")  # REMOVE
+        # main_tree.save_viz(viz_dir, "_postLaplace")  # REMOVE
         main_tree_pcd = main_tree.distribute_equally(0.001)[0]
-        main_tree.save_viz(viz_dir, "_postDistribute", main_tree_pcd)  # REMOVE
+        # main_tree.save_viz(viz_dir, "_postDistribute", main_tree_pcd)  # REMOVE
 
     elif method == "ftsem":
         if clean:
@@ -128,18 +128,18 @@ def skeletonize(method, edges, radius, likelihood_values, likelihood_points,
             main_tree = UndirectedGraph(observed_tree.distribute_equally(0.01)[0], search_radius_scale=2)
             main_tree.construct_initial_graphs()
             main_tree.merge_components()
-        main_tree.save_viz(viz_dir, "_preFTSEM")  # REMOVE
+        # main_tree.save_viz(viz_dir, "_preFTSEM")  # REMOVE
         connected = True
         connection_count = 0
         while connected:
             connected = main_tree.breakpoint_connection()
             connection_count += 1
             print('{} breakpoints connected.'.format(connection_count))
-        main_tree.save_viz(viz_dir, "_postFTSEM")  # REMOVE
+        # main_tree.save_viz(viz_dir, "_postFTSEM")  # REMOVE
         main_tree.laplacian_smoothing()
-        main_tree.save_viz(viz_dir, "_postLaplace")  # REMOVE
+        # main_tree.save_viz(viz_dir, "_postLaplace")  # REMOVE
         main_tree_pcd = main_tree.distribute_equally(0.001)[0]
-        main_tree.save_viz(viz_dir, "_postDistribute", main_tree_pcd)  # REMOVE
+        # main_tree.save_viz(viz_dir, "_postDistribute", main_tree_pcd)  # REMOVE
 
     else:
         raise ValueError(f"Found unexpected method {method}")
@@ -244,10 +244,12 @@ class UndirectedGraph:
         self.kdtree = o3d.geometry.KDTreeFlann(pcd)
         self.num_nodes = len(self.nodes_array)
         if graph is None:
-            self.adjacency_matrix = np.zeros((self.num_nodes, self.num_nodes))
+            self._adjacency_matrix = np.zeros((self.num_nodes, self.num_nodes))
+            self._graph = None
         else:
             # TODO: Maybe in the future convert adjacency_matrix to sparse?
-            self.adjacency_matrix = nx.adjacency_matrix(graph).toarray()
+            self._adjacency_matrix = nx.adjacency_matrix(graph).toarray()
+            self._graph = graph
 
         # The search radius is the average neighbor-to-neighbor distance scaled
         total_dist = 0
@@ -257,6 +259,45 @@ class UndirectedGraph:
             # Therefore dist[1] is the distance (squared) to the neighbor
             total_dist += np.sqrt(dist[1])
         self.search_radius = total_dist / self.num_nodes * search_radius_scale
+
+    @property
+    def graph(self):
+        '''
+        In conjunction with set_adjacency, tries to maintain parity between
+        adjacency matrix and a corresponding graph
+        '''
+        if self._graph is None:
+            self._graph = nx.from_numpy_matrix(self._adjacency_matrix)
+        return self._graph
+
+    @property
+    def adjacency_matrix(self):
+        '''
+        In conjunction with set_adjacency, tries to maintain parity between
+        adjacency matrix and a corresponding graph
+        '''
+        if self._adjacency_matrix is None:
+            self._adjacency_matrix = nx.adjacency_matrix(self._graph).toarray()
+        return self._adjacency_matrix
+
+    def add_graph_edge(self, idx0, idx1, weight):
+        '''
+        Sets values to the graph and in the meantime makes sure to sunset the
+        adjacency matrix.
+        STEPPING STONE - This could be improved but should be robust.
+        '''
+        self._graph.add_edge(idx0, idx1, weight=weight)
+        self._adjacency_matrix = None
+
+    def set_adjacency(self, idx0, idx1, value):
+        '''
+        Sets values to the adjacency matrix (symmetrically for undirected
+        graph) and in the meantime makes sure to sunset the stored graph.
+        STEPPING STONE - This could be improved but should be robust.
+        '''
+        self._adjacency_matrix[idx0, idx1] = value
+        self._adjacency_matrix[idx1, idx0] = value
+        self._graph = None
 
     def construct_initial_graphs(self):
         '''
@@ -277,8 +318,7 @@ class UndirectedGraph:
         )
         for neighbor_node_idx in idx:
             if neighbor_node_idx not in self.visited_nodes:
-                self.adjacency_matrix[current_node_idx, neighbor_node_idx] = 1
-                self.adjacency_matrix[neighbor_node_idx, current_node_idx] = 1
+                self.set_adjacency(current_node_idx, neighbor_node_idx, 1)
                 self._construct_initial_graph_recursion(neighbor_node_idx)
                 break
         return
@@ -295,8 +335,7 @@ class UndirectedGraph:
                 voxel_size*np.sqrt(3) * 1.1,
             )
             for neighbor_node_idx, dist in zip(neighbor_idx[1:], np.sqrt(dist_sq[1:])):
-                self.adjacency_matrix[current_node_idx, neighbor_node_idx] = dist
-                self.adjacency_matrix[neighbor_node_idx, current_node_idx] = dist
+                self.set_adjacency(current_node_idx, neighbor_node_idx, dist)
 
     def get_connected_components(self):
         return scipy.sparse.csgraph.connected_components(self.adjacency_matrix)
@@ -357,9 +396,8 @@ class UndirectedGraph:
                         closest_component_idx = node_idx
                         min_dist = dist
                 if min_dist < self.search_radius:
-                    assert(self.adjacency_matrix[closest_component_idx, closest_other_idx]!=1)
-                    self.adjacency_matrix[closest_component_idx, closest_other_idx] = 1
-                    self.adjacency_matrix[closest_other_idx, closest_component_idx] = 1
+                    assert(self.adjacency_matrix[closest_component_idx, closest_other_idx] != 1)
+                    self.set_adjacency(closest_component_idx, closest_other_idx, 1)
                     merged = True
                     break
             if not merged:
@@ -372,7 +410,7 @@ class UndirectedGraph:
 
         new_nodes = np.array(new_nodes)
         num_new_nodes = len(new_nodes)
-        new_node_indices = np.array(range(self.num_nodes, self.num_nodes+num_new_nodes))
+        new_node_indices = np.array(range(num_new_nodes)) + self.num_nodes
 
         # update radius
         head_radius = self.nodes_radius[head_idx]
@@ -390,19 +428,10 @@ class UndirectedGraph:
         self.kdtree = o3d.geometry.KDTreeFlann(self.pcd)
         self.num_nodes = len(self.nodes_array)
 
-        new_adjacency_matrix_size = self.adjacency_matrix.shape[0] + num_new_nodes
-        new_adjacency_matrix = np.zeros((new_adjacency_matrix_size, new_adjacency_matrix_size))
-        new_adjacency_matrix[:self.adjacency_matrix.shape[0], :self.adjacency_matrix.shape[1]] = self.adjacency_matrix 
-        self.adjacency_matrix = new_adjacency_matrix
-
         # Add bridge connections
-        self.adjacency_matrix[head_idx, new_node_indices[0]] = 1
-        self.adjacency_matrix[new_node_indices[0], head_idx] = 1
-        for i in range(num_new_nodes - 1):
-            self.adjacency_matrix[new_node_indices[i], new_node_indices[i + 1]] = 1
-            self.adjacency_matrix[new_node_indices[i + 1], new_node_indices[i]] = 1
-        self.adjacency_matrix[new_node_indices[-1], tail_idx] = 1
-        self.adjacency_matrix[tail_idx, new_node_indices[-1]] = 1
+        for idx0, idx1 in zip([head_idx] + new_node_indices.tolist(),
+                              new_node_indices.tolist() + [tail_idx]):
+            self.add_graph_edge(idx0, idx1, 1)
 
     def get_edgelist(self):
         nx_graph = nx.from_numpy_matrix(np.triu(self.adjacency_matrix), create_using=nx.DiGraph())
@@ -576,11 +605,10 @@ class UndirectedGraph:
                     continue
                 elif len(valid_q_k)==0 and (NP is not None):
                     # Connect P_j to NP
-                    self.adjacency_matrix[P_j, NP] = 1
-                    self.adjacency_matrix[NP, P_j] = 1
+                    self.set_adjacency(P_j, NP, 1)
                     return True
 
-                # Step 6: 
+                # Step 6:
                 q_k_min_list = []
                 bd_k_min = INF
                 for q_k, bd_k, abg_k in valid_q_k:
@@ -589,23 +617,20 @@ class UndirectedGraph:
                         q_k_min_list.append((q_k, bd_k, abg_k))
                 #assert(len(q_k_min_list)==1)
                 q_k_min = q_k_min_list[0]
-                if NP is None: 
+                if NP is None:
                     # Connect P_j to q_k_min
-                    self.adjacency_matrix[P_j, q_k_min[0]] = 1
-                    self.adjacency_matrix[q_k_min[0], P_j] = 1
+                    self.set_adjacency(P_j, q_k_min[0], 1)
                     return True
                 condition_1 = q_k_min[1]<=3*bda_np_candidates[1]
                 condition_2 = q_k_min[2][0]<=np.max(bda_np_candidates[2][:,0])
                 equation_6 =  condition_1 and condition_2
                 if equation_6:
                     # Connect P_j to q_k_min
-                    self.adjacency_matrix[P_j, q_k_min[0]] = 1
-                    self.adjacency_matrix[q_k_min[0], P_j] = 1
+                    self.set_adjacency(P_j, q_k_min[0], 1)
                     return True
                 else:
                     # Connect P_j to NP
-                    self.adjacency_matrix[P_j, NP] = 1
-                    self.adjacency_matrix[NP, P_j] = 1
+                    self.set_adjacency(P_j, NP, 1)
                     return True
 
         #self.visualize_tree()
@@ -698,7 +723,7 @@ class SkeletonMerger:
         self.likelihood_map = likelihood_map
         self.fn_weights = fn_weights
         for i in range(iters):
-            print(f"Path search iter: {i+1} / {iters}")
+            print(f"Path search iter: {i+1} / (max) {iters}")
             self.associate_nodes_to_main()
             merged = self.merge_shortest_path_components()
             if not merged:
@@ -751,7 +776,7 @@ class SkeletonMerger:
             # be zero.
             path_lengths, paths = nx.multi_source_dijkstra(
                 # This is all nodes, not just valid targets
-                G=nx.from_numpy_matrix(self.likelihood_map.adjacency_matrix),
+                G=self.likelihood_map.graph,
                 # All likelihood points associated with the current root cluster
                 sources=set(cluster_nodes),
                 weight=self.fn_weights,
@@ -812,7 +837,7 @@ class SkeletonMerger:
 
 def construct_initial_skeleton(edges, radius):
     '''
-    First converst edges into a series of linearly spaced points along the
+    First convert edges into a series of linearly spaced points along the
     edges, which are presumed to overlap.
     Does Laplacian smoothing on the overlapped and sampled edges.
     '''
