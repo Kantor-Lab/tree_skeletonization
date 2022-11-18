@@ -65,7 +65,7 @@ def edge2likelihood_points(edge, radius, voxel_size):
     var1 = std1**2
     var2 = std2**2
 
-    if edge_length>0:
+    if edge_length > 0:
         variance = np.array([var1, var2, var2])
         vec1 = (edge[1] - edge[0]) / edge_length
         R_mat1 = get_rotation_matrix(vec1)
@@ -111,23 +111,48 @@ def sample_ellipsoid(a,b,c, voxel_size):
 def gaussian_kernel(mean, variance, R_mat, points):
     # Compute covariance matrix
     var = np.diag(variance)
-    cov = R_mat@var@R_mat.T
-    likelihood_fn = multivariate_normal(cov = cov, mean = mean)
-    points = (R_mat@points.T).T+mean
+    cov = R_mat @ var @ R_mat.T
+    likelihood_fn = multivariate_normal(cov=cov, mean=mean)
+    points = (R_mat @ points.T).T + mean
     return points, likelihood_fn
 
 
 def compute_joint_likelihood(pcd, likelihood_functions, scores, print_freq=1):
-    min_hyperparam = 0.0
+
+    # RADIUS_SCALE was carefully chosen so that the likelihood outside of the
+    # chosen radius (based on the scaled covariance) is negligible. In these
+    # examples, {1:X} means the max likelihood between 0-1 radius, {3:X} is
+    # between 2-3 radii, etc. I picked a high and low example from a number of
+    # checked values, 7 looks safe in both cases.
+    # {1: 1, 2: 0.57, 3: 0.115, 4: 0.0086, 5: 0.00025,    6: 1.45569-19, 7: 1.49177-21}
+    # {1: 1, 2: 0.60, 3: 0.107, 4: 0.0112, 5: 2.95392-50, 6: 1.16455-51, 7: 3.40675-54}
+    RADIUS_SCALE = 7
+    MIN_HYPERPARAM = 0.0
+
     pcd_array = np.asarray(pcd.points)
+    kdtree = o3d.geometry.KDTreeFlann(pcd)
+    likelihoods = np.zeros(pcd_array.shape[0])
+
+    # TODO MAKE THIS FASTER (~1/3 the time for small voxels)
     for i, (fn, score) in enumerate(zip(likelihood_functions, scores)):
-        if print_freq > 0:
-            if i % print_freq == 0:
-                print('Computing joint likelihood: {}/{}'.format(i,len(scores)))
-        likelihood = fn.pdf(pcd_array)
-        likelihood = (score - min_hyperparam) * likelihood / max(likelihood) + min_hyperparam
-        if i == 0:
-            likelihoods = np.copy(likelihood)
-        else:
-            likelihoods = 1 - (1 - likelihoods) * (1 - likelihood)
+        if print_freq > 0 and i % print_freq == 0:
+            print('Computing joint likelihood: {}/{}'.format(i,len(scores)))
+
+        # Get the relevant radius by looking at the std deviation (sqrt of
+        # variance) in the maximum eigen direction of the covariance (then
+        # scaled)
+        # NOTE: eig sometimes returns X+0j numbers, which are still real but
+        # cause a warning from kdtree so suppress that
+        radius = RADIUS_SCALE * np.sqrt(np.linalg.eig(fn.cov)[0].max())
+        assert np.isreal(radius), "A complex radius was found, investigate"
+        radius = np.real(radius)
+
+        # Only update likelihoods within a reasonable range for speed reasons
+        _, indices, dist_sq = kdtree.search_radius_vector_3d(fn.mean, radius)
+        indices = np.array(indices)
+        likelihood = fn.pdf(pcd_array[indices])
+        # TODO: Try np.max
+        likelihood = (score - MIN_HYPERPARAM) * likelihood / likelihood.max() + MIN_HYPERPARAM
+        likelihoods[indices] = 1 - (1 - likelihoods[indices]) * (1 - likelihood)
+
     return pcd, likelihoods
