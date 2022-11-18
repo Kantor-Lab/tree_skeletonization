@@ -64,8 +64,9 @@ def skeletonize(method, edges, radius, likelihood_values, likelihood_points,
                 break
         else:
             raise RuntimeError("Never found voxel size that met memory requirements")
+
         map_points = np.asarray([
-            map_vg.origin + pt.grid_index * map_vg.voxel_size
+            map_vg.origin + (pt.grid_index + 0.5) * map_vg.voxel_size
             for pt in map_vg.get_voxels()
         ])
         map_values = np.asarray([pt.color[0] for pt in map_vg.get_voxels()])
