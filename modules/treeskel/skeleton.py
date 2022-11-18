@@ -11,6 +11,9 @@ try:
 except ModuleNotFoundError:
     from process_2021.tree_skeletonization.modules.helper.visualization import LineMesh
 
+np.set_printoptions(precision=4, suppress=True)
+INF = float("inf")
+
 
 def make_cloud(points, colors=None):
     cloud = o3d.geometry.PointCloud()
@@ -66,18 +69,18 @@ def skeletonize(method, edges, radius, likelihood_values, likelihood_points,
             for pt in map_vg.get_voxels()
         ])
         map_values = np.asarray([pt.color[0] for pt in map_vg.get_voxels()])
-        map_colors = plt.get_cmap("jet")(map_values)[:,:3]
-        map_pcd = make_cloud(map_points, map_colors)
+        map_pcd = make_cloud(map_points, plt.get_cmap("jet")(map_values)[:,:3])
         # Make a graph on the likelihood voxels that is fully connected within
         # the voxel size radius
         map_tree = UndirectedGraph(map_pcd)
         map_tree.construct_skeleton_graph(voxel_size)
-        map_tree.save_viz(viz_dir, "_MAP")  # REMOVE
+        map_tree.save_viz(viz_dir, "_LIKELIHOODMAP", linecolor=(0, 0, 1))  # REMOVE
 
         def fn_weight(u, v, d):
             '''
             u and v are two points in the likelihood map
             We turn likelihood (high good) into cost (low good) with -log
+            d is unused, it must be accepted by the function we're calling.
             '''
             return -np.log((map_values[u] + map_values[v]) / 2)
 
@@ -86,10 +89,9 @@ def skeletonize(method, edges, radius, likelihood_values, likelihood_points,
         else:
             observed_tree = construct_initial_skeleton(edges, radius)
         observed_tree.save_viz(viz_dir, "_PRESKEL")  # REMOVE
-        import ipdb; ipdb.set_trace()
         merger = SkeletonMerger(observed_tree, map_tree, fn_weight)
         main_tree = merger.main_tree
-        main_tree.save_viz(viz_dir, "_MAP")  # REMOVE
+        main_tree.save_viz(viz_dir, "_MERGE")  # REMOVE
 
         main_tree.pcd = laplacian_smoothing(main_tree.pcd, search_radius=0.015)
         main_tree.nodes_array = np.array(main_tree.pcd.points)
@@ -140,10 +142,6 @@ def skeletonize(method, edges, radius, likelihood_values, likelihood_points,
 
     else:
         raise ValueError(f"Found unexpected method {method}")
-
-    main_tree_colors = np.zeros_like(main_tree_pcd.points)
-    main_tree_colors[:,:2] = 1
-    main_tree_pcd.colors = o3d.utility.Vector3dVector(main_tree_colors)
 
     return main_tree_pcd, map_pcd, tree_mesh
 
@@ -302,14 +300,13 @@ class UndirectedGraph:
     def get_connected_components(self):
         return scipy.sparse.csgraph.connected_components(self.adjacency_matrix)
 
-    def save_viz(self, viz_dir, suffix="", pcd=None):
+    def save_viz(self, viz_dir, suffix="", pcd=None, linecolor=(1, 0, 0)):
         if pcd is not None:
             o3d.io.write_point_cloud(str(viz_dir.joinpath(f"finalpcd{suffix}.ply")), pcd)
         combined_pcd = self.visualize_adjacency_matrix(display=False)
-        o3d.io.write_point_cloud(str(viz_dir.joinpath(f"adj_matrix{suffix}.ply")), combined_pcd)
-        line_mesh, pcd = self.visualize_tree(display=False)
+        o3d.io.write_point_cloud(str(viz_dir.joinpath(f"adj_components{suffix}.ply")), combined_pcd)
+        line_mesh, _ = self.visualize_tree(display=False, linecolor=linecolor)
         o3d.io.write_triangle_mesh(str(viz_dir.joinpath(f"tree_mesh{suffix}.ply")), line_mesh)
-        o3d.io.write_point_cloud(str(viz_dir.joinpath(f"tree_pcd{suffix}.ply")), pcd)
 
     def visualize_adjacency_matrix(self, pcd=None, display=True):
         num_components, components = self.get_connected_components()
@@ -349,7 +346,7 @@ class UndirectedGraph:
                 other_pcd = o3d.geometry.PointCloud()
                 other_pcd.points = o3d.utility.Vector3dVector(other_nodes)
                 other_tree = o3d.geometry.KDTreeFlann(other_pcd)
-                min_dist = float('inf')
+                min_dist = INF
                 for node_idx in component_node_indices:
                     node = self.nodes_array[node_idx]
                     [k, idx, dist_sq] = other_tree.search_knn_vector_3d(node, 1)
@@ -379,9 +376,12 @@ class UndirectedGraph:
         # update radius
         head_radius = self.nodes_radius[head_idx]
         tail_radius = self.nodes_radius[tail_idx]
-        radius_step = (head_radius-tail_radius)/(num_new_nodes+1)
+        radius_step = (head_radius - tail_radius) / (num_new_nodes + 1)
         for i in range(num_new_nodes):
-            self.nodes_radius = np.append(self.nodes_radius, [head_radius-radius_step*(i+1)])
+            self.nodes_radius = np.append(
+                self.nodes_radius,
+                [head_radius - radius_step * (i + 1)],
+            )
 
         # Update class properties
         self.nodes_array = np.concatenate((self.nodes_array, new_nodes), axis=0)
@@ -389,7 +389,7 @@ class UndirectedGraph:
         self.kdtree = o3d.geometry.KDTreeFlann(self.pcd)
         self.num_nodes = len(self.nodes_array)
 
-        new_adjacency_matrix_size = self.adjacency_matrix.shape[0]+num_new_nodes
+        new_adjacency_matrix_size = self.adjacency_matrix.shape[0] + num_new_nodes
         new_adjacency_matrix = np.zeros((new_adjacency_matrix_size, new_adjacency_matrix_size))
         new_adjacency_matrix[:self.adjacency_matrix.shape[0], :self.adjacency_matrix.shape[1]] = self.adjacency_matrix 
         self.adjacency_matrix = new_adjacency_matrix
@@ -397,9 +397,9 @@ class UndirectedGraph:
         # Add bridge connections
         self.adjacency_matrix[head_idx, new_node_indices[0]] = 1
         self.adjacency_matrix[new_node_indices[0], head_idx] = 1
-        for i in range(num_new_nodes-1):
-            self.adjacency_matrix[new_node_indices[i], new_node_indices[i+1]] = 1
-            self.adjacency_matrix[new_node_indices[i+1], new_node_indices[i]] = 1
+        for i in range(num_new_nodes - 1):
+            self.adjacency_matrix[new_node_indices[i], new_node_indices[i + 1]] = 1
+            self.adjacency_matrix[new_node_indices[i + 1], new_node_indices[i]] = 1
         self.adjacency_matrix[new_node_indices[-1], tail_idx] = 1
         self.adjacency_matrix[tail_idx, new_node_indices[-1]] = 1
 
@@ -408,19 +408,18 @@ class UndirectedGraph:
         edge_list = nx.to_edgelist(nx_graph)
         edge_node_list = []
         for edge_idx in edge_list:
-            if np.linalg.norm(self.nodes_array[edge_idx[0]]-self.nodes_array[edge_idx[1]])>0.008*0.2:
+            if np.linalg.norm(self.nodes_array[edge_idx[0]]-self.nodes_array[edge_idx[1]])>0.008 * 0.2:
                 edge_node = [self.nodes_array[edge_idx[0]], self.nodes_array[edge_idx[1]]]
                 edge_node_list.append(edge_node)
         edge_node_array = np.array(edge_node_list)
         return edge_node_array
 
-    def visualize_tree(self, pcd=None, display=True):
+    def visualize_tree(self, pcd=None, display=True, linecolor=(1, 0, 0)):
         if pcd is None:
             pcd = self.pcd
-        edges = self.get_edgelist()
-        edge_points = edges.reshape(-1,3)
-        edge_lines = np.array([[i,i+1] for i in range(0, len(edge_points), 2)])
-        edge_colors = [[1, 0, 0] for i in range(len(edge_lines))]
+        edge_points = self.get_edgelist().reshape(-1, 3)
+        edge_lines = np.array([[i, i + 1] for i in range(0, len(edge_points), 2)])
+        edge_colors = [linecolor] * len(edge_lines)
         line_mesh = o3d.geometry.TriangleMesh()
         for line in LineMesh(edge_points, edge_lines, edge_colors, radius=0.001).cylinder_segments:
             line_mesh += line
@@ -478,7 +477,7 @@ class UndirectedGraph:
         the adjacency matrix.
         '''
         smoothed_nodes_array = np.zeros_like(self.nodes_array)
-        total_euclidean_change = float('inf')
+        total_euclidean_change = INF
         while total_euclidean_change > 0.01:
             total_euclidean_change = 0
             for i in range(self.nodes_array.shape[0]):
@@ -499,7 +498,7 @@ class UndirectedGraph:
         connected_components = self.get_connected_components()
         values, counts = np.unique(connected_components[1], return_counts=True)
         values = np.flip(values[np.argsort(counts)])
-        min_z = float('inf')
+        min_z = INF
         for i in range(2):
             comp_nodes = self.nodes_array[np.argwhere(connected_components[1]==values[i])].reshape(-1,3)
             z = np.min(comp_nodes[:,2])
@@ -521,7 +520,6 @@ class UndirectedGraph:
             branch_nodes = self.nodes_array[np.argwhere(connected_components[1]==branch_comp_idx)].reshape(-1,3)
             branch_lowest_points.append(np.min(branch_nodes[:,2]))
         B_list = np.array(B_list)[np.argsort(branch_lowest_points)]
-
 
         # Make mainbranch kd-tree
         main_branch_node_indices = np.argwhere(connected_components[1]==main_branch_comp_id)
@@ -583,7 +581,7 @@ class UndirectedGraph:
 
                 # Step 6: 
                 q_k_min_list = []
-                bd_k_min = float('inf')
+                bd_k_min = INF
                 for q_k, bd_k, abg_k in valid_q_k:
                     if np.round(bd_k, 4) <= np.round(bd_k_min, 4):
                         bd_k_min = bd_k
@@ -652,15 +650,15 @@ class UndirectedGraph:
                 alpha_deg = np.degrees(np.arccos(cos_alpha))
                 beta_deg = np.degrees(np.arccos(cos_beta))
                 gamma_deg = np.degrees(np.arccos(cos_gamma))
-                
-                abg_candidates.append([alpha_deg, beta_deg, gamma_deg])        
-        return bd, np.array(abg_candidates)    
+
+                abg_candidates.append([alpha_deg, beta_deg, gamma_deg])
+        return bd, np.array(abg_candidates)
 
     def get_breakpoints(self, component_id, connected_components):
-        branch_node_indices = np.argwhere(connected_components[1]==component_id)
+        branch_node_indices = np.argwhere(connected_components[1] == component_id)
         breakpoints_node_indices = []
         for branch_node_idx in branch_node_indices:
-            if np.sum(self.adjacency_matrix[branch_node_idx])==1: 
+            if np.sum(self.adjacency_matrix[branch_node_idx]) == 1:
                 breakpoints_node_indices.append(branch_node_idx)
         return np.array(breakpoints_node_indices).flatten()
 
@@ -706,25 +704,25 @@ class SkeletonMerger:
                 break
 
     def associate_nodes_to_main(self):
+
         # 1. Compute skeleton association to observed tree components
         self.nodes_association = np.full(self.likelihood_map.num_nodes, -1)
-        main_tree_connected_components = self.main_tree.get_connected_components()
+        num_components, components = self.main_tree.get_connected_components()
         for map_node_idx, map_node in enumerate(self.likelihood_map.nodes_array):
-            [k, main_tree_idx, dist_sq] = self.main_tree.kdtree.search_radius_vector_3d(
+            k, main_tree_idx, _ = self.main_tree.kdtree.search_radius_vector_3d(
                 map_node,
                 self.main_tree.search_radius,
             )
             # NOTE: We think this is associating each point in the likelihood
             # map to the connected component ID
             if k > 0:
-                self.nodes_association[map_node_idx] = \
-                    main_tree_connected_components[1][main_tree_idx[0]]
+                self.nodes_association[map_node_idx] = components[main_tree_idx[0]]
 
         # 2. Get component ID in order of lowest component in to highest
         #    component in euclidean space
         component_min_height_list = []
-        for component_id in range(main_tree_connected_components[0]):
-            component_indices = np.where(main_tree_connected_components[1]==component_id)[0]
+        for component_id in range(num_components):
+            component_indices = np.where(components == component_id)[0]
             component_points_array = self.main_tree.nodes_array[component_indices]
             # Get the point with the lowest Z value
             min_height_in_component = np.min(component_points_array[:,2])
@@ -732,53 +730,70 @@ class SkeletonMerger:
         self.component_id_root_order = np.argsort(component_min_height_list)
 
     def merge_shortest_path_components(self):
-        for component_id in self.component_id_root_order:
-            # 1. Find which nodes I have to compute paths for
-            root_skeleton_nodes_idx = np.where(self.nodes_association==component_id)[0]
-            if len(root_skeleton_nodes_idx)==0:
-                continue
-            # These are likelihood points that have been claimed by some other
-            # segment
-            valid_targets = np.where(np.all([self.nodes_association!=component_id, self.nodes_association!=-1], axis=0))[0]
 
-            # 2. Compute path for all nodes and find shortest path
-            nx_graph = nx.from_numpy_matrix(self.likelihood_map.adjacency_matrix, create_using=nx.DiGraph())
-            # Exhaustive pathing from the source nodes
+        for component_id in self.component_id_root_order:
+
+            # 1. Find which nodes I have to compute paths for
+            cluster_nodes = np.where(self.nodes_association == component_id)[0]
+            assert len(cluster_nodes) > 0  # REMOVE
+            # Likelihood points that have been claimed by some other segment
+            valid_targets = np.where(np.logical_and(
+                self.nodes_association != component_id,
+                self.nodes_association != -1,
+            ))[0]
+
+            # 2. Compute path for all nodes and find shortest path. This is
+            # exhaustive pathing from the source nodes. The paths variable is a
+            # dictionary consisting of
+            #   {every G index: path to the closest node in cluster_nodes}
+            # Note that the path length for indices already in the cluster will
+            # be zero.
             path_lengths, paths = nx.multi_source_dijkstra(
                 # This is all nodes, not just valid targets
-                G=nx_graph,
+                G=nx.from_numpy_matrix(self.likelihood_map.adjacency_matrix),
                 # All likelihood points associated with the current root cluster
-                sources=set(root_skeleton_nodes_idx),
-                target=None,
-                cutoff=None,
+                sources=set(cluster_nodes),
                 weight=self.fn_weights,
             )
 
-            shortest_path_length = float('inf')
-            for target in valid_targets:
-                try:
-                    path_length = path_lengths[target]
-                except KeyError:
-                    path_length = float('inf')
-                if path_length<shortest_path_length:
-                    shortest_path_length = path_length
-                    shortest_target = target
-            if shortest_path_length==float('inf'):
-                if component_id==self.component_id_root_order[-1]:
+            # For some targets there will be no path, so it won't be available,
+            # hence the get() call
+            shortest_target = valid_targets[
+                np.argmin([path_lengths.get(t, INF) for t in valid_targets])
+            ]
+            if shortest_target in path_lengths:
+                shortest_path_length = path_lengths[shortest_target]
+                # List of nodes that steps through the graph
+                shortest_path_indices = paths[shortest_target]
+            else:
+                # TODO: Is there a smart way not to re-do computations?
+                print(f"No path found from component {component_id} to any other")
+                if component_id == self.component_id_root_order[-1]:
+                    print("Ending search, went through all components")
                     return False
                 else:
                     continue
-            # This is the a list of nodes that steps through the graph
-            shortest_path_indices = paths[shortest_target]
 
-            print('Shortest Path:', shortest_path_length, shortest_path_indices)
+            print(f"Shortest path from component {component_id} to any other component:"
+                  f" {shortest_path_length:.3f} (cost units)")
+            print(f"\tPath indices: {shortest_path_indices}")
 
+            # Find the nodes (points in space) in the likelihood map that start
+            # and end the shortest path
             shortest_path_nodes = self.likelihood_map.nodes_array[shortest_path_indices]
             head_node, tail_node = shortest_path_nodes[0], shortest_path_nodes[-1]
-            [k, head_main_tree_idx, _] = self.main_tree.kdtree.search_knn_vector_3d(head_node, 1)
-            [k, tail_main_tree_idx, _] = self.main_tree.kdtree.search_knn_vector_3d(tail_node, 1)
-            head_main_tree_idx, tail_main_tree_idx = head_main_tree_idx[0], tail_main_tree_idx[0]
-            self.main_tree.bridge_components(shortest_path_nodes, head_main_tree_idx, tail_main_tree_idx)
+            # Find the main tree node indices that are closest to the selected
+            # likelihood nodes
+            k, head_idx, _ = self.main_tree.kdtree.search_knn_vector_3d(head_node, 1)
+            k, tail_idx, _ = self.main_tree.kdtree.search_knn_vector_3d(tail_node, 1)
+            head_idx, tail_idx = head_idx[0], tail_idx[0]
+
+            # Bridge from the head to tail (both already part of the main tree)
+            # through the shortest path that we found in the likelihoods
+            self.main_tree.bridge_components(shortest_path_nodes, head_idx, tail_idx)
+            print(f"\tBridged from {self.main_tree.nodes_array[head_idx]} to"
+                  f" {self.main_tree.nodes_array[tail_idx]} along the shortest likelihood path")
+
             return True
 
     def plot_association(self):
