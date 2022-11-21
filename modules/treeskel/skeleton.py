@@ -75,7 +75,7 @@ def skeletonize(method, edges, radius, likelihood_values, likelihood_points,
         # the voxel size radius
         map_tree = UndirectedGraph(map_pcd)
         map_tree.construct_skeleton_graph(voxel_size)
-        map_tree.save_viz(viz_dir, "_LIKELIHOODMAP", linecolor=(0, 0, 1))  # REMOVE
+        # map_tree.save_viz(viz_dir, "_LIKELIHOODMAP", linecolor=(0, 0, 1))  # REMOVE
 
         def fn_weight(u, v, d):
             '''
@@ -89,10 +89,9 @@ def skeletonize(method, edges, radius, likelihood_values, likelihood_points,
             observed_tree = construct_initial_clean_skeleton(edges, radius)
         else:
             observed_tree = construct_initial_skeleton(edges, radius)
-        observed_tree.save_viz(viz_dir, "_PRESKEL")  # REMOVE
+        # observed_tree.save_viz(viz_dir, "_PRESKEL")  # REMOVE
         merger = SkeletonMerger(observed_tree, map_tree, fn_weight)
         main_tree = merger.main_tree
-        main_tree.save_viz(viz_dir, "_MERGE")  # REMOVE
 
         main_tree.pcd = laplacian_smoothing(main_tree.pcd, search_radius=0.015)
         main_tree.nodes_array = np.array(main_tree.pcd.points)
@@ -100,6 +99,7 @@ def skeletonize(method, edges, radius, likelihood_values, likelihood_points,
 
         main_tree_pcd, radius = main_tree.distribute_equally(0.001) #0.0005 # update radius
         tree_mesh = generate_sphere_mesh(main_tree_pcd, radius) # update_radius
+        # main_tree.save_viz(viz_dir, "_MERGE")  # REMOVE
 
     elif method == "mst":
         if clean:
@@ -109,16 +109,16 @@ def skeletonize(method, edges, radius, likelihood_values, likelihood_points,
             main_tree = UndirectedGraph(observed_tree.distribute_equally(0.01)[0], search_radius_scale=2)
             main_tree.construct_initial_graphs()
             main_tree.merge_components()
-        main_tree.save_viz(viz_dir, "_preMST")  # REMOVE
+        # main_tree.save_viz(viz_dir, "_preMST")  # REMOVE
         main_tree.minimum_spanning_tree()
-        main_tree.save_viz(viz_dir, "_postMST")  # REMOVE
+        # main_tree.save_viz(viz_dir, "_postMST")  # REMOVE
         main_tree.pcd = laplacian_smoothing(main_tree.pcd, search_radius=0.015)
         main_tree.nodes_array = np.array(main_tree.pcd.points)
         main_tree.num_nodes = len(main_tree.nodes_array)
         main_tree.laplacian_smoothing()
-        main_tree.save_viz(viz_dir, "_postLaplace")  # REMOVE
+        # main_tree.save_viz(viz_dir, "_postLaplace")  # REMOVE
         main_tree_pcd = main_tree.distribute_equally(0.001)[0]
-        main_tree.save_viz(viz_dir, "_postDistribute", main_tree_pcd)  # REMOVE
+        # main_tree.save_viz(viz_dir, "_postDistribute", main_tree_pcd)  # REMOVE
 
     elif method == "ftsem":
         if clean:
@@ -128,18 +128,18 @@ def skeletonize(method, edges, radius, likelihood_values, likelihood_points,
             main_tree = UndirectedGraph(observed_tree.distribute_equally(0.01)[0], search_radius_scale=2)
             main_tree.construct_initial_graphs()
             main_tree.merge_components()
-        main_tree.save_viz(viz_dir, "_preFTSEM")  # REMOVE
+        # main_tree.save_viz(viz_dir, "_preFTSEM")  # REMOVE
         connected = True
         connection_count = 0
         while connected:
             connected = main_tree.breakpoint_connection()
             connection_count += 1
             print('{} breakpoints connected.'.format(connection_count))
-        main_tree.save_viz(viz_dir, "_postFTSEM")  # REMOVE
+        # main_tree.save_viz(viz_dir, "_postFTSEM")  # REMOVE
         main_tree.laplacian_smoothing()
-        main_tree.save_viz(viz_dir, "_postLaplace")  # REMOVE
+        # main_tree.save_viz(viz_dir, "_postLaplace")  # REMOVE
         main_tree_pcd = main_tree.distribute_equally(0.001)[0]
-        main_tree.save_viz(viz_dir, "_postDistribute", main_tree_pcd)  # REMOVE
+        # main_tree.save_viz(viz_dir, "_postDistribute", main_tree_pcd)  # REMOVE
 
     else:
         raise ValueError(f"Found unexpected method {method}")
@@ -299,6 +299,15 @@ class UndirectedGraph:
         self._adjacency_matrix[idx1, idx0] = value
         self._graph = None
 
+    def set_adjacency_matrix(self, matrix):
+        '''
+        Sets values to the adjacency matrix and in the meantime makes sure to
+        sunset the stored graph.
+        STEPPING STONE - This could be improved but should be robust.
+        '''
+        self._adjacency_matrix = matrix
+        self._graph = None
+
     def toarray(self):
         graph = self.graph
         points = self.nodes_array
@@ -308,6 +317,7 @@ class UndirectedGraph:
         return np.array([
             points[e[0]].tolist() + points[e[1]].tolist() + [radii[e[0]], radii[e[1]]]
             for e in graph.edges
+            if np.linalg.norm(points[e[1]] - points[e[0]]) > 1e-6
         ])
 
     def construct_initial_graphs(self):
@@ -719,7 +729,7 @@ class UndirectedGraph:
         for edge in sorted(T.edges(data=True)):
             mst_adj_mat[edge[0],edge[1]] = 1
             mst_adj_mat[edge[1],edge[0]] = 1
-        self.adjacency_matrix = mst_adj_mat
+        self.set_adjacency_matrix(mst_adj_mat)
 
 
 class SkeletonMerger:
