@@ -151,7 +151,6 @@ def compute_joint_likelihood(pcd, likelihood_functions, scores, print_freq=1):
         _, indices, dist_sq = kdtree.search_radius_vector_3d(fn.mean, radius)
         indices = np.array(indices)
         likelihood = fn.pdf(pcd_array[indices])
-        # TODO: Try np.max
         likelihood = (score - MIN_HYPERPARAM) * likelihood / likelihood.max() + MIN_HYPERPARAM
         likelihoods[indices] = 1 - (1 - likelihoods[indices]) * (1 - likelihood)
 

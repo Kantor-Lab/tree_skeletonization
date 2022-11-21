@@ -75,7 +75,7 @@ def skeletonize(method, edges, radius, likelihood_values, likelihood_points,
         # the voxel size radius
         map_tree = UndirectedGraph(map_pcd)
         map_tree.construct_skeleton_graph(voxel_size)
-        # map_tree.save_viz(viz_dir, "_LIKELIHOODMAP", linecolor=(0, 0, 1))  # REMOVE
+        map_tree.save_viz(viz_dir, "_LIKELIHOODMAP", linecolor=(0, 0, 1))  # REMOVE
 
         def fn_weight(u, v, d):
             '''
@@ -89,10 +89,10 @@ def skeletonize(method, edges, radius, likelihood_values, likelihood_points,
             observed_tree = construct_initial_clean_skeleton(edges, radius)
         else:
             observed_tree = construct_initial_skeleton(edges, radius)
-        # observed_tree.save_viz(viz_dir, "_PRESKEL")  # REMOVE
+        observed_tree.save_viz(viz_dir, "_PRESKEL")  # REMOVE
         merger = SkeletonMerger(observed_tree, map_tree, fn_weight)
         main_tree = merger.main_tree
-        # main_tree.save_viz(viz_dir, "_MERGE")  # REMOVE
+        main_tree.save_viz(viz_dir, "_MERGE")  # REMOVE
 
         main_tree.pcd = laplacian_smoothing(main_tree.pcd, search_radius=0.015)
         main_tree.nodes_array = np.array(main_tree.pcd.points)
@@ -109,16 +109,16 @@ def skeletonize(method, edges, radius, likelihood_values, likelihood_points,
             main_tree = UndirectedGraph(observed_tree.distribute_equally(0.01)[0], search_radius_scale=2)
             main_tree.construct_initial_graphs()
             main_tree.merge_components()
-        # main_tree.save_viz(viz_dir, "_preMST")  # REMOVE
+        main_tree.save_viz(viz_dir, "_preMST")  # REMOVE
         main_tree.minimum_spanning_tree()
-        # main_tree.save_viz(viz_dir, "_postMST")  # REMOVE
+        main_tree.save_viz(viz_dir, "_postMST")  # REMOVE
         main_tree.pcd = laplacian_smoothing(main_tree.pcd, search_radius=0.015)
         main_tree.nodes_array = np.array(main_tree.pcd.points)
         main_tree.num_nodes = len(main_tree.nodes_array)
         main_tree.laplacian_smoothing()
-        # main_tree.save_viz(viz_dir, "_postLaplace")  # REMOVE
+        main_tree.save_viz(viz_dir, "_postLaplace")  # REMOVE
         main_tree_pcd = main_tree.distribute_equally(0.001)[0]
-        # main_tree.save_viz(viz_dir, "_postDistribute", main_tree_pcd)  # REMOVE
+        main_tree.save_viz(viz_dir, "_postDistribute", main_tree_pcd)  # REMOVE
 
     elif method == "ftsem":
         if clean:
@@ -128,23 +128,23 @@ def skeletonize(method, edges, radius, likelihood_values, likelihood_points,
             main_tree = UndirectedGraph(observed_tree.distribute_equally(0.01)[0], search_radius_scale=2)
             main_tree.construct_initial_graphs()
             main_tree.merge_components()
-        # main_tree.save_viz(viz_dir, "_preFTSEM")  # REMOVE
+        main_tree.save_viz(viz_dir, "_preFTSEM")  # REMOVE
         connected = True
         connection_count = 0
         while connected:
             connected = main_tree.breakpoint_connection()
             connection_count += 1
             print('{} breakpoints connected.'.format(connection_count))
-        # main_tree.save_viz(viz_dir, "_postFTSEM")  # REMOVE
+        main_tree.save_viz(viz_dir, "_postFTSEM")  # REMOVE
         main_tree.laplacian_smoothing()
-        # main_tree.save_viz(viz_dir, "_postLaplace")  # REMOVE
+        main_tree.save_viz(viz_dir, "_postLaplace")  # REMOVE
         main_tree_pcd = main_tree.distribute_equally(0.001)[0]
-        # main_tree.save_viz(viz_dir, "_postDistribute", main_tree_pcd)  # REMOVE
+        main_tree.save_viz(viz_dir, "_postDistribute", main_tree_pcd)  # REMOVE
 
     else:
         raise ValueError(f"Found unexpected method {method}")
 
-    return main_tree_pcd, map_pcd, tree_mesh
+    return main_tree_pcd, map_pcd, tree_mesh, main_tree.toarray()
 
 
 def laplacian_smoothing(pcd, search_radius=0.01):
@@ -298,6 +298,17 @@ class UndirectedGraph:
         self._adjacency_matrix[idx0, idx1] = value
         self._adjacency_matrix[idx1, idx0] = value
         self._graph = None
+
+    def toarray(self):
+        graph = self.graph
+        points = self.nodes_array
+        radii = self.nodes_radius
+        # Format is 8-vector of [3d point 1, 3d point 2, radius 1, radius 2],
+        # each of which stores an edge in the skeleton
+        return np.array([
+            points[e[0]].tolist() + points[e[1]].tolist() + [radii[e[0]], radii[e[1]]]
+            for e in graph.edges
+        ])
 
     def construct_initial_graphs(self):
         '''
@@ -946,4 +957,4 @@ def generate_sphere_mesh(pcd, radius):
         sphere_mesh.translate(point)
         sphere_mesh.paint_uniform_color([0.588, 0.294, 0])
         tree_mesh+=sphere_mesh
-    return tree_mesh 
+    return tree_mesh

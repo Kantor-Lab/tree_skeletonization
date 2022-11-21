@@ -26,7 +26,7 @@ if __name__ == '__main__':
     tree_preproc = np.load(filename, allow_pickle=True)
 
     voxel_size = tree_preproc.item().get('voxel_size')
-    main_tree_pcd, likelihood_map_pcd, tree_mesh = skeletonize(
+    main_tree_pcd, likelihood_map_pcd, tree_mesh, _ = skeletonize(
         method=args.method,
         edges=tree_preproc.item().get('edges'),
         radius=tree_preproc.item().get('radius'),
