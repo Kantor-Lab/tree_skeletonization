@@ -99,7 +99,7 @@ def skeletonize(method, edges, radius, likelihood_values, likelihood_points,
 
         main_tree_pcd, radius = main_tree.distribute_equally(0.001) #0.0005 # update radius
         tree_mesh = generate_sphere_mesh(main_tree_pcd, radius) # update_radius
-        # main_tree.save_viz(viz_dir, "_MERGE")  # REMOVE
+        main_tree.save_viz(viz_dir, "_MERGE")  # REMOVE
 
     elif method == "mst":
         if clean:
@@ -111,14 +111,14 @@ def skeletonize(method, edges, radius, likelihood_values, likelihood_points,
             main_tree.merge_components()
         # main_tree.save_viz(viz_dir, "_preMST")  # REMOVE
         main_tree.minimum_spanning_tree()
-        # main_tree.save_viz(viz_dir, "_postMST")  # REMOVE
+        main_tree.save_viz(viz_dir, "_postMST")  # REMOVE
         main_tree.pcd = laplacian_smoothing(main_tree.pcd, search_radius=0.015)
         main_tree.nodes_array = np.array(main_tree.pcd.points)
         main_tree.num_nodes = len(main_tree.nodes_array)
         main_tree.laplacian_smoothing()
-        # main_tree.save_viz(viz_dir, "_postLaplace")  # REMOVE
+        main_tree.save_viz(viz_dir, "_postLaplace")  # REMOVE
         main_tree_pcd = main_tree.distribute_equally(0.001)[0]
-        # main_tree.save_viz(viz_dir, "_postDistribute", main_tree_pcd)  # REMOVE
+        main_tree.save_viz(viz_dir, "_postDistribute", main_tree_pcd)  # REMOVE
 
     elif method == "ftsem":
         if clean:
@@ -745,7 +745,9 @@ class SkeletonMerger:
         self.fn_weights = fn_weights
         for i in range(iters):
             print(f"Path search iter: {i+1} / (max) {iters}")
-            self.associate_nodes_to_main()
+            num_components = self.associate_nodes_to_main()
+            if num_components == 1:
+                break
             merged = self.merge_shortest_path_components()
             if not merged:
                 break
@@ -776,6 +778,8 @@ class SkeletonMerger:
             component_min_height_list.append(min_height_in_component)
         self.component_id_root_order = np.argsort(component_min_height_list)
 
+        return num_components
+
     def merge_shortest_path_components(self):
 
         for component_id in self.component_id_root_order:
@@ -805,6 +809,8 @@ class SkeletonMerger:
 
             # For some targets there will be no path, so it won't be available,
             # hence the get() call
+            if len(valid_targets) == 0:
+                import ipdb; ipdb.set_trace()
             shortest_target = valid_targets[
                 np.argmin([path_lengths.get(t, INF) for t in valid_targets])
             ]
