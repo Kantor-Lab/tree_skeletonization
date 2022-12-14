@@ -172,11 +172,13 @@ def laplacian_smoothing(pcd, search_radius=0.01):
 
         [k, idx, _] = pcd_tree.search_radius_vector_3d(point, radius=0.001+search_radius*AR)
         filtered_points.append(np.mean(np.asarray(pcd.points)[idx, :], axis=0))
-        filtered_colors.append(np.mean(np.asarray(pcd.colors)[idx, :], axis=0))
+        if len(pcd.colors) > 0:
+            filtered_colors.append(np.mean(np.asarray(pcd.colors)[idx, :], axis=0))
     # filtered_points = np.unique(filtered_points, axis=0)  # BREAKS LAPLACIAN SMOOTHING
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(np.array(filtered_points))
-    pcd.colors = o3d.utility.Vector3dVector(np.array(filtered_colors))
+    if len(filtered_colors) > 0:
+        pcd.colors = o3d.utility.Vector3dVector(np.array(filtered_colors))
     return pcd
 
 
