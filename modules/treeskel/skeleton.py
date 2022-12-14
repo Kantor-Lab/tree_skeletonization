@@ -2,6 +2,7 @@ import copy
 import distinctipy
 import numpy as np
 import open3d as o3d
+from tqdm import tqdm
 import scipy
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -159,7 +160,8 @@ def laplacian_smoothing(pcd, search_radius=0.01):
     '''
     pcd_tree = o3d.geometry.KDTreeFlann(pcd)
     filtered_points = []
-    for point in np.asarray(pcd.points):
+    filtered_colors = []
+    for point in tqdm(np.asarray(pcd.points), desc="Laplacian smoothing"):
         [k, idx, _] = pcd_tree.search_knn_vector_3d(point, knn=20)
         points_in_radius = np.asarray(pcd.points)[idx, :]
 
@@ -169,13 +171,13 @@ def laplacian_smoothing(pcd, search_radius=0.01):
         AR = np.sqrt(s[1]/s[0])
 
         [k, idx, _] = pcd_tree.search_radius_vector_3d(point, radius=0.001+search_radius*AR)
-        points_in_radius = np.asarray(pcd.points)[idx, :]
-        avg_point = np.mean(points_in_radius, axis=0)
-        filtered_points.append(avg_point)
+        filtered_points.append(np.mean(np.asarray(pcd.points)[idx, :], axis=0))
+        filtered_colors.append(np.mean(np.asarray(pcd.colors)[idx, :], axis=0))
     # filtered_points = np.unique(filtered_points, axis=0)  # BREAKS LAPLACIAN SMOOTHING
-    filtered_pcd = o3d.geometry.PointCloud()
-    filtered_pcd.points = o3d.utility.Vector3dVector(np.array(filtered_points))
-    return filtered_pcd
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(np.array(filtered_points))
+    pcd.colors = o3d.utility.Vector3dVector(np.array(filtered_colors))
+    return pcd
 
 
 def equal_spacing(pcd, radiuses): # update radius
