@@ -25,7 +25,8 @@ def make_cloud(points, colors=None):
 
 
 def skeletonize(method, edges, radius, likelihood_values, likelihood_points,
-                likelihood_colors, voxel_size, clean=False, viz_dir=None):
+                likelihood_colors, voxel_size, clean=False, viz_dir=None,
+                verbose=True):
     '''
     Arguments:
         method: String, choice of ["default", "field", "mst", "ftsem"]
@@ -61,7 +62,8 @@ def skeletonize(method, edges, radius, likelihood_values, likelihood_points,
             # this much space (adjacency matrix inefficient)
             if num_voxels < 25000:
                 voxel_size = round(voxel_size, 3)
-                print(f"Selected Voxel Size {voxel_size} with {num_voxels} likelihood nodes.")
+                if verbose:
+                    print(f"Selected Voxel Size {voxel_size} with {num_voxels} likelihood nodes.")
                 break
         else:
             raise RuntimeError("Never found voxel size that met memory requirements")
@@ -74,7 +76,7 @@ def skeletonize(method, edges, radius, likelihood_values, likelihood_points,
         map_pcd = make_cloud(map_points, plt.get_cmap("jet")(map_values)[:,:3])
         # Make a graph on the likelihood voxels that is fully connected within
         # the voxel size radius
-        map_tree = UndirectedGraph(map_pcd)
+        map_tree = UndirectedGraph(map_pcd, verbose=verbose)
         map_tree.construct_skeleton_graph(voxel_size)
         # map_tree.save_viz(viz_dir, "_LIKELIHOODMAP", linecolor=(0, 0, 1))  # REMOVE
 
@@ -91,7 +93,7 @@ def skeletonize(method, edges, radius, likelihood_values, likelihood_points,
         else:
             observed_tree = construct_initial_skeleton(edges, radius)
         # observed_tree.save_viz(viz_dir, "_PRESKEL")  # REMOVE
-        merger = SkeletonMerger(observed_tree, map_tree, fn_weight)
+        merger = SkeletonMerger(observed_tree, map_tree, fn_weight, verbose=verbose)
         main_tree = merger.main_tree
 
         main_tree.pcd = laplacian_smoothing(main_tree.pcd, search_radius=0.015)
@@ -135,7 +137,8 @@ def skeletonize(method, edges, radius, likelihood_values, likelihood_points,
         while connected:
             connected = main_tree.breakpoint_connection()
             connection_count += 1
-            print('{} breakpoints connected.'.format(connection_count))
+            if verbose:
+                print('{} breakpoints connected.'.format(connection_count))
         # main_tree.save_viz(viz_dir, "_postFTSEM")  # REMOVE
         main_tree.laplacian_smoothing()
         # main_tree.save_viz(viz_dir, "_postLaplace")  # REMOVE
@@ -231,7 +234,8 @@ def equal_spacing(pcd, radiuses): # update radius
 
 
 class UndirectedGraph:
-    def __init__(self, pcd, radius=None, search_radius_scale=10, graph=None):
+    def __init__(self, pcd, radius=None, search_radius_scale=10, graph=None,
+                 verbose=True):
         '''
         Arguments:
             pcd: TODO
@@ -263,6 +267,8 @@ class UndirectedGraph:
             # Therefore dist[1] is the distance (squared) to the neighbor
             total_dist += np.sqrt(dist[1])
         self.search_radius = total_dist / self.num_nodes * search_radius_scale
+
+        self.verbose = verbose
 
     @property
     def graph(self):
@@ -402,7 +408,8 @@ class UndirectedGraph:
             num_components, connected_components = self.get_connected_components()
             if num_components == 1:
                 break
-            print('Merging components. Components remaining:', num_components)
+            if self.verbose:
+                print('Merging components. Components remaining:', num_components)
             merged = False
             for i in range(num_components):
                 component_node_indices = np.where(connected_components == i)[0]
@@ -716,7 +723,8 @@ class UndirectedGraph:
     # MST
     def minimum_spanning_tree(self):
 
-        print("Building connected graph")
+        if self.verbose:
+            print("Building connected graph")
         fully_connected_weighted_adj_mat = np.zeros_like(self.adjacency_matrix)
         for i in range(self.num_nodes - 1):
             for j in range(i + 1, self.num_nodes):
@@ -725,10 +733,12 @@ class UndirectedGraph:
                 fully_connected_weighted_adj_mat[j, i] = weight
         G = nx.from_numpy_array(fully_connected_weighted_adj_mat)
 
-        print("Calculating MST")
+        if self.verbose:
+            print("Calculating MST")
         T = nx.minimum_spanning_tree(G)
 
-        print("Producing MST matrix")
+        if self.verbose:
+            print("Producing MST matrix")
         mst_adj_mat = np.zeros_like(self.adjacency_matrix)
         for edge in sorted(T.edges(data=True)):
             mst_adj_mat[edge[0],edge[1]] = 1
@@ -737,7 +747,8 @@ class UndirectedGraph:
 
 
 class SkeletonMerger:
-    def __init__(self, main_tree, likelihood_map, fn_weights, iters=200):
+    def __init__(self, main_tree, likelihood_map, fn_weights, iters=200,
+                 verbose=True):
         '''
         Arguments:
             main_tree: UndirectedGraph
@@ -747,8 +758,10 @@ class SkeletonMerger:
         self.main_tree = main_tree
         self.likelihood_map = likelihood_map
         self.fn_weights = fn_weights
+        self.verbose = verbose
         for i in range(iters):
-            print(f"Path search iter: {i+1} / (max) {iters}")
+            if self.verbose:
+                print(f"Path search iter: {i+1} / (max) {iters}")
             num_components = self.associate_nodes_to_main()
             if num_components == 1:
                 break
@@ -824,16 +837,19 @@ class SkeletonMerger:
                 shortest_path_indices = paths[shortest_target]
             else:
                 # TODO: Is there a smart way not to re-do computations?
-                print(f"No path found from component {component_id} to any other")
+                if self.verbose:
+                    print(f"No path found from component {component_id} to any other")
                 if component_id == self.component_id_root_order[-1]:
-                    print("Ending search, went through all components")
+                    if self.verbose:
+                        print("Ending search, went through all components")
                     return False
                 else:
                     continue
 
-            print(f"Shortest path from component {component_id} to any other component:"
-                  f" {shortest_path_length:.3f} (cost units)")
-            print(f"\tPath indices: {shortest_path_indices}")
+            if self.verbose:
+                print(f"Shortest path from component {component_id} to any other component:"
+                      f" {shortest_path_length:.3f} (cost units)")
+                print(f"\tPath indices: {shortest_path_indices}")
 
             # Find the nodes (points in space) in the likelihood map that start
             # and end the shortest path
@@ -848,8 +864,10 @@ class SkeletonMerger:
             # Bridge from the head to tail (both already part of the main tree)
             # through the shortest path that we found in the likelihoods
             self.main_tree.bridge_components(shortest_path_nodes, head_idx, tail_idx)
-            print(f"\tBridged from {self.main_tree.nodes_array[head_idx]} to"
-                  f" {self.main_tree.nodes_array[tail_idx]} along the shortest likelihood path")
+            if self.verbose:
+                print(f"\tBridged from {self.main_tree.nodes_array[head_idx]}"
+                      f" to {self.main_tree.nodes_array[tail_idx]} along the"
+                      " shortest likelihood path")
 
             return True
 
