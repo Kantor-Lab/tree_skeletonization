@@ -102,7 +102,7 @@ def skeletonize(method, edges, radius, likelihood_values, likelihood_points,
 
         main_tree_pcd, radius = main_tree.distribute_equally(0.001) #0.0005 # update radius
         tree_mesh = generate_sphere_mesh(main_tree_pcd, radius) # update_radius
-        main_tree.save_viz(viz_dir, "_MERGE")  # REMOVE
+        # main_tree.save_viz(viz_dir, "_MERGE")  # REMOVE
 
     elif method == "mst":
         if clean:
@@ -114,14 +114,14 @@ def skeletonize(method, edges, radius, likelihood_values, likelihood_points,
             main_tree.merge_components()
         # main_tree.save_viz(viz_dir, "_preMST")  # REMOVE
         main_tree.minimum_spanning_tree()
-        main_tree.save_viz(viz_dir, "_postMST")  # REMOVE
+        # main_tree.save_viz(viz_dir, "_postMST")  # REMOVE
         main_tree.pcd = laplacian_smoothing(main_tree.pcd, search_radius=0.015)
         main_tree.nodes_array = np.array(main_tree.pcd.points)
         main_tree.num_nodes = len(main_tree.nodes_array)
         main_tree.laplacian_smoothing()
-        main_tree.save_viz(viz_dir, "_postLaplace")  # REMOVE
+        # main_tree.save_viz(viz_dir, "_postLaplace")  # REMOVE
         main_tree_pcd = main_tree.distribute_equally(0.001)[0]
-        main_tree.save_viz(viz_dir, "_postDistribute", main_tree_pcd)  # REMOVE
+        # main_tree.save_viz(viz_dir, "_postDistribute", main_tree_pcd)  # REMOVE
 
     elif method == "ftsem":
         if clean:
