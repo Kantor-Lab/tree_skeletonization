@@ -151,37 +151,39 @@ def skeletonize(method, edges, radius, likelihood_values, likelihood_points,
     return main_tree_pcd, map_pcd, tree_mesh, main_tree.toarray()
 
 
-def laplacian_smoothing(pcd, search_radius=0.01):
+def laplacian_smoothing(pcd, num_neighbors=20, search_radius=0.01):
     '''
     Dynamically computes a search radius for each point, then averaging
     the points within the search radius.
-    Take the closest 20 points, compute the shape. If the shape is slender
+    Take the closest N points, compute the shape. If the shape is slender
     (first principle bigger than second) then the search radius we use is
     smaller.
-    This filters down points by removing points that are in the same spot
-    after this averaging process.
     '''
+    points = np.asarray(pcd.points)
     pcd_tree = o3d.geometry.KDTreeFlann(pcd)
-    filtered_points = []
-    filtered_colors = []
-    for point in tqdm(np.asarray(pcd.points), desc="Laplacian smoothing"):
-        [k, idx, _] = pcd_tree.search_knn_vector_3d(point, knn=20)
-        points_in_radius = np.asarray(pcd.points)[idx, :]
+    new_points = []
+    new_colors = []
 
-        points_in_radius_centered = points_in_radius - np.mean(points_in_radius, axis=0)
-        covariance_matrix = (points_in_radius_centered.T@points_in_radius_centered)/len(points_in_radius_centered)
-        u, s, vh = np.linalg.svd(covariance_matrix)
-        AR = np.sqrt(s[1]/s[0])
+    for point in tqdm(points, desc="Laplacian smoothing"):
+        _, nn_indices, _ = pcd_tree.search_knn_vector_3d(point, knn=num_neighbors)
+        in_radius = points[nn_indices, :]
 
-        [k, idx, _] = pcd_tree.search_radius_vector_3d(point, radius=0.001+search_radius*AR)
-        filtered_points.append(np.mean(np.asarray(pcd.points)[idx, :], axis=0))
+        centered = in_radius - np.mean(in_radius, axis=0)
+        covariance_matrix = (centered.T @ centered) / len(centered)
+        _, singular_vals, _ = np.linalg.svd(covariance_matrix)
+        AR = np.sqrt(singular_vals[1] / singular_vals[0])
+
+        _, rad_indices, _ = pcd_tree.search_radius_vector_3d(
+            point, radius=0.001+search_radius*AR
+        )
+        new_points.append(np.mean(points[rad_indices, :], axis=0))
         if len(pcd.colors) > 0:
-            filtered_colors.append(np.mean(np.asarray(pcd.colors)[idx, :], axis=0))
-    # filtered_points = np.unique(filtered_points, axis=0)  # BREAKS LAPLACIAN SMOOTHING
+            new_colors.append(np.mean(np.asarray(pcd.colors)[rad_indices, :], axis=0))
+
     pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(np.array(filtered_points))
-    if len(filtered_colors) > 0:
-        pcd.colors = o3d.utility.Vector3dVector(np.array(filtered_colors))
+    pcd.points = o3d.utility.Vector3dVector(np.array(new_points))
+    if len(new_colors) > 0:
+        pcd.colors = o3d.utility.Vector3dVector(np.array(new_colors))
     return pcd
 
 
