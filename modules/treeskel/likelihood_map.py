@@ -144,7 +144,8 @@ def compute_joint_likelihood(pcd, likelihood_functions, scores, print_freq=1):
         # NOTE: eig sometimes returns X+0j numbers, which are still real but
         # cause a warning from kdtree so suppress that
         radius = RADIUS_SCALE * np.sqrt(np.linalg.eig(fn.cov)[0].max())
-        assert np.isreal(radius), "A complex radius was found, investigate"
+        assert np.isreal(radius) or np.imag(radius) < 1e-10, \
+            f"A complex radius {radius} was found, investigate"
         radius = np.real(radius)
 
         # Only update likelihoods within a reasonable range for speed reasons
