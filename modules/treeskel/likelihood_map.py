@@ -3,6 +3,7 @@ import open3d as o3d
 import matplotlib.pyplot as plt
 from scipy.spatial.transform import Rotation
 from scipy.stats import multivariate_normal
+from tqdm import tqdm
 
 def construct_likelihood_map(edges, radius, scores, voxel_size, visualize=False): # voxel_size should match that of octomap voxel size
     points_list = []
@@ -82,8 +83,9 @@ def gaussian_kernel(mean, variance, R_mat, points):
 def compute_joint_likelihood(pcd, likelihood_functions, scores):
     min_hyperparam = 0.0
     pcd_array = np.asarray(pcd.points)
-    for i,(fn, score) in enumerate(zip(likelihood_functions, scores)):
-        print('Computing joint likelihood: {}/{}'.format(i,len(scores)))
+    for i in tqdm(range(len(likelihood_functions))):
+        fn = likelihood_functions[i]
+        score = scores[i]
         likelihood = fn.pdf(pcd_array)
         likelihood = (score-min_hyperparam)*likelihood/max(likelihood)+min_hyperparam 
         if i==0:

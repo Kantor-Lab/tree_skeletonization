@@ -196,7 +196,7 @@ class UndirectedGraph:
         self.adjacency_matrix[tail_idx, new_node_indices[-1]] = 1
 
     def get_edgelist(self):
-        nx_graph = nx.from_numpy_matrix(np.triu(self.adjacency_matrix), create_using=nx.DiGraph())
+        nx_graph = nx.from_numpy_array(np.triu(self.adjacency_matrix), create_using=nx.DiGraph())
         edge_list = nx.to_edgelist(nx_graph)
         edge_node_list = []
         for edge_idx in edge_list:
@@ -217,7 +217,7 @@ class UndirectedGraph:
         o3d.visualization.draw_geometries([*line_mesh, pcd]) # self.pcd
 
     def distribute_equally(self, spacing):
-        nx_graph = nx.from_numpy_matrix(self.adjacency_matrix, create_using=nx.DiGraph())
+        nx_graph = nx.from_numpy_array(self.adjacency_matrix, create_using=nx.DiGraph())
         dfs = list(nx.dfs_edges(nx_graph))
         nodes = []
         nodes.append(self.nodes_array[0])
@@ -509,7 +509,7 @@ class SkeletonMerger:
             valid_targets = np.where(np.all([self.nodes_association!=component_id, self.nodes_association!=-1], axis=0))[0]
             
             # 2. Compute path for all nodes and find shortest path
-            nx_graph = nx.from_numpy_matrix(self.likelihood_map.adjacency_matrix, create_using=nx.DiGraph())
+            nx_graph = nx.from_numpy_array(self.likelihood_map.adjacency_matrix, create_using=nx.DiGraph())
             path_lengths, paths = nx.multi_source_dijkstra(nx_graph, set(root_skeleton_nodes_idx), target=None, cutoff=None, weight=self.fn_weights)
 
             shortest_path_length = float('inf')
