@@ -81,15 +81,20 @@ def gaussian_kernel(mean, variance, R_mat, points):
     return points, likelihood_fn
 
 def compute_joint_likelihood(pcd, likelihood_functions, scores):
+    radius_scale = 7 # 99.7% of the points will be within 3 std
     min_hyperparam = 0.0
     pcd_array = np.asarray(pcd.points)
+    kdtree = o3d.geometry.KDTreeFlann(pcd)
+    likelihoods = np.zeros(pcd_array.shape[0])
     for i in tqdm(range(len(likelihood_functions))):
         fn = likelihood_functions[i]
-        score = scores[i]
-        likelihood = fn.pdf(pcd_array)
-        likelihood = (score-min_hyperparam)*likelihood/max(likelihood)+min_hyperparam 
-        if i==0:
-            likelihoods = np.copy(likelihood) 
-        else:
-            likelihoods = 1 - (1-likelihoods)*(1-likelihood)
+        eigenvalues, eigenvectors = np.linalg.eig(fn.cov)
+        stddev = np.sqrt(eigenvalues).max()
+        update_radius = radius_scale*np.real(stddev) # Eig returns X+0j, so we need to take the real part
+        # Only update likelihoods within reasonable distance for computational efficiency
+        _, indices, dist_sq = kdtree.search_radius_vector_3d(fn.mean, update_radius)
+        indices = np.array(indices)
+        likelihood = fn.pdf(pcd_array[indices])
+        likelihood = (scores[i]-min_hyperparam)*likelihood/max(likelihood)+min_hyperparam 
+        likelihoods[indices] = 1 - (1-likelihoods[indices])*(1-likelihood) # Equation 2 in the paper
     return pcd, likelihoods

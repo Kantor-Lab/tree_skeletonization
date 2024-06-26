@@ -2,6 +2,7 @@ import numpy as np
 import open3d as o3d
 from geomdl import fitting
 from ..helper.visualization import LineMesh
+import time
 
 def plot_edges(edges, pcd, radius=0.001, vis_kwargs=None):
     edges = np.array(edges)
@@ -76,6 +77,7 @@ def extract_nurbs(pcd, cluster_indices, scores, ctrlpts_size=4, degree=1, visual
             cluster_centered_aligned_sorted = cluster_centered_aligned[cluster_centered_aligned[:, 0].argsort()]
             cluster_centered_sorted = cluster_centered_aligned_sorted@vh
             cluster_sorted = cluster_centered_sorted + cluster_mean
+            # TODO: Bottleneck here (fitting.approximate_curve) in terms of computation time
             curve = fitting.approximate_curve(cluster_sorted.tolist(), degree=degree, ctrlpts_size=ctrlpts_size)
             curve_points = np.array(curve.ctrlpts)
             for i in range(ctrlpts_size-1):
